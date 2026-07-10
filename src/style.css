@@ -49,6 +49,11 @@ textarea {
   font: inherit;
 }
 
+a {
+  text-decoration: none !important;
+  color: inherit !important;
+}
+
 h1,
 h2,
 h3,
@@ -848,8 +853,8 @@ textarea::placeholder {
   .editor-tab,
   .topbar {
     background: var(--glass);
-    backdrop-filter: blur(12px) saturate(118%);
-    -webkit-backdrop-filter: blur(12px) saturate(118%);
+    backdrop-filter: blur(18px) saturate(120%);
+    -webkit-backdrop-filter: blur(18px) saturate(120%);
   }
 
   .menu-category-tab,
