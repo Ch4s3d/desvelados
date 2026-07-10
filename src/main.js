@@ -825,7 +825,6 @@ function renderNavbar() {
     <header class="topbar">
       <a class="brand" href="#/dashboard">
         <span class="brand__title">Desvelados</span>
-        <span class="brand__subtitle">Brunch Casual · 8:00 AM a 2:00 PM</span>
       </a>
       <nav class="nav-links" aria-label="Navegacion principal">
         <a class="nav-link ${state.route === 'dashboard' ? 'is-active' : ''}" href="#/dashboard">Inicio</a>
@@ -927,9 +926,11 @@ function renderPublicDashboardView() {
         Aqui hay comida real: huevito al gusto, chilaquiles bien servidos, tortillas hechas a mano y pan brioche artesanal.
       </p>
       <div class="hero-meta">
-        <article>
-          <span>Horario</span>
-          <strong>8:00 AM a 2:00 PM</strong>
+        <article class="hero-schedule">
+          <span class="schedule-label">Horario</span>
+          <strong class="schedule-days">Martes a Domingo</strong>
+          <p class="schedule-hours">8:00 AM a 2:00 PM</p>
+          <small class="schedule-note">Lunes cerrado</small>
         </article>
       </div>
       <article class="hero-contact card">
@@ -1009,8 +1010,10 @@ function renderPublicCategory(category) {
 function renderDishCard(item) {
   return `
     <article class="card dish-card">
-      <div class="dish-price">${currency(item.precio)}</div>
-      <h3>${escapeHtml(item.nombre)}</h3>
+      <div class="dish-head">
+        <h3>${escapeHtml(item.nombre)}</h3>
+        <div class="dish-price">${currency(item.precio)}</div>
+      </div>
       <p>${escapeHtml(item.descripcion || '')}</p>
     </article>
   `

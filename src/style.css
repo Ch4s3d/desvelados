@@ -390,6 +390,43 @@ h3,
   padding: 14px;
 }
 
+.hero-schedule {
+  display: grid;
+  gap: 6px;
+  border-radius: 16px;
+}
+
+.schedule-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #e8d8bf;
+}
+
+.schedule-label::before {
+  content: '◷';
+  font-size: 0.95rem;
+  opacity: 0.95;
+}
+
+.schedule-days {
+  font-size: clamp(1.22rem, 2.8vw, 1.5rem);
+  color: #f6dcb7;
+  line-height: 1.1;
+}
+
+.schedule-hours {
+  margin: 0;
+  font-size: 1.03rem;
+  color: #f2f2f2;
+}
+
+.schedule-note {
+  color: #bfbfbf;
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+}
+
 .hero-contact {
   margin-top: 24px;
 }
@@ -493,6 +530,18 @@ h3,
 .dish-card {
   padding: 14px;
   gap: 8px;
+}
+
+.dish-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dish-head h3 {
+  margin: 0;
+  flex: 1;
 }
 
 .dish-price {
