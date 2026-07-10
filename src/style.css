@@ -43,7 +43,7 @@ html::before {
   z-index: -2;
   pointer-events: none;
   background-image: var(--bg-mobile-image);
-  background-position: center;
+  background-position: left center;
   background-repeat: no-repeat;
   background-size: cover;
 }
@@ -853,6 +853,7 @@ textarea::placeholder {
 @media (min-width: 920px) {
   html::before {
     background-image: var(--bg-desktop-image);
+    background-position: center;
   }
 
   .topbar {
