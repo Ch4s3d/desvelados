@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function email() {
+      return signedIn() && request.auth.token.email != null
+        ? request.auth.token.email
+        : '';
+    }
+
+    function isBootstrapAdmin() {
+      return email() == 'j0bsch453d@gmail.com';
+    }
+
+    function accessDoc(userId) {
+      return get(/databases/$(database)/documents/admin_access/$(userId));
+    }
+
+    function accessExists(userId) {
+      return exists(/databases/$(database)/documents/admin_access/$(userId));
+    }
+
+    function isApprovedEditor() {
+      return signedIn()
+        && (
+          isBootstrapAdmin()
+          || (
+            accessExists(request.auth.uid)
+            && accessDoc(request.auth.uid).data.approved == true
+            && accessDoc(request.auth.uid).data.role == 'editor'
+          )
+        );
+    }
+
+    function isAdminReviewer() {
+      return signedIn() && isBootstrapAdmin();
+    }
+
+    function isOwnAccessDoc(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isSafeOwnAccessWrite() {
+      return request.resource.data.email == email()
+        && request.resource.data.approved == resource.data.approved
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.reviewStatus == resource.data.reviewStatus
+        && request.resource.data.reviewedAt == resource.data.reviewedAt
+        && request.resource.data.reviewedBy == resource.data.reviewedBy;
+    }
+
+    match /menu/{menuId} {
+      allow read: if true;
+      allow create, update, delete: if isApprovedEditor();
+    }
+
+    match /pedidos/{pedidoId} {
+      allow read, create, update, delete: if isApprovedEditor();
+    }
+
+    match /inventario/{ingredientId} {
+      allow read, create, update, delete: if isApprovedEditor();
+    }
+
+    match /admin_access/{userId} {
+      allow read: if isAdminReviewer() || isOwnAccessDoc(userId);
+
+      allow create: if isOwnAccessDoc(userId)
+        && request.resource.data.email == email()
+        && (
+          (
+            request.resource.data.email == 'j0bsch453d@gmail.com'
+            && request.resource.data.approved == true
+            && request.resource.data.role == 'admin'
+          )
+          || (
+            request.resource.data.email != 'j0bsch453d@gmail.com'
+            && request.resource.data.approved == false
+            && request.resource.data.role == 'requested'
+          )
+        );
+
+      allow update: if isOwnAccessDoc(userId)
+        && isSafeOwnAccessWrite();
+
+      allow update: if isAdminReviewer()
+        && resource.data.email != 'j0bsch453d@gmail.com';
+
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
