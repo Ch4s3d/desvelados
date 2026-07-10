@@ -123,7 +123,6 @@ h3,
 }
 
 .content,
-.alerts,
 .menu-sections,
 .module-grid,
 .stack,
@@ -819,6 +818,56 @@ textarea::placeholder {
   border-color: rgba(255, 186, 173, 0.4);
 }
 
+.alerts {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 9999;
+  display: grid;
+  gap: 10px;
+  width: min(420px, calc(100vw - 28px));
+  pointer-events: none;
+}
+
+.toast {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+  background: rgba(28, 28, 28, 0.52);
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+  color: var(--light);
+  pointer-events: auto;
+  animation: toastIn 0.28s ease both;
+}
+
+.toast p {
+  margin: 0;
+  line-height: 1.35;
+  color: #f2f2f2;
+}
+
+.toast-close {
+  border: 0;
+  background: transparent;
+  color: #d9d9d9;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 8px;
+}
+
+.toast-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
 .empty {
   padding: 16px;
 }
@@ -834,6 +883,17 @@ textarea::placeholder {
   }
   to {
     transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes toastIn {
+  from {
+    transform: translateX(18px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
     opacity: 1;
   }
 }
@@ -926,6 +986,14 @@ textarea::placeholder {
 }
 
 @media (max-width: 760px) {
+  .alerts {
+    top: auto;
+    right: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    width: min(420px, calc(100vw - 24px));
+  }
+
   .dish-grid {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;

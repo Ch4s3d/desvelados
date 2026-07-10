@@ -66,6 +66,8 @@ const state = {
   editingMenuId: null,
 }
 
+const noticeTimers = new Map()
+
 const subscriptions = {
   accessEntries: null,
   accessProfile: null,
@@ -322,6 +324,16 @@ function attachEvents() {
       return
     }
 
+    if (action === 'close-notice') {
+      const noticeId = actionNode.dataset.id
+      if (!noticeId) {
+        return
+      }
+      removeNotice(noticeId)
+      render()
+      return
+    }
+
     if (action === 'change-status') {
       const pedidoId = actionNode.dataset.id
       const select = document.querySelector(`[data-status-select="${pedidoId}"]`)
@@ -462,9 +474,23 @@ async function handleLogin() {
   try {
     await signInWithPopup(auth, provider)
   } catch (error) {
-    pushNotice(error.message)
+    console.error(error)
+    pushNotice(getFriendlyAuthMessage(error))
     render()
   }
+}
+
+function getFriendlyAuthMessage(error) {
+  const code = error?.code || ''
+  const messages = {
+    'auth/popup-closed-by-user': 'Vaya desvelo. Parece que cerraste la ventana antes de tiempo.',
+    'auth/popup-blocked': 'Tu navegador bloqueo la ventana emergente. Activa popups e intenta de nuevo.',
+    'auth/cancelled-popup-request': 'Ya habia una ventana de inicio abierta. Intenta de nuevo en un momento.',
+    'auth/network-request-failed': 'No pudimos conectar con Firebase. Revisa tu internet y vuelve a intentar.',
+    'auth/too-many-requests': 'Demasiados intentos seguidos. Espera un momento y vuelve a intentar.',
+  }
+
+  return messages[code] || 'No se pudo iniciar sesion por ahora. Intenta de nuevo en unos segundos.'
 }
 
 async function createIngredient(formData) {
@@ -778,7 +804,28 @@ function escapeHtml(value) {
 }
 
 function pushNotice(message) {
-  state.notices = [message]
+  const notice = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    message,
+  }
+
+  state.notices = [...state.notices, notice]
+
+  const timeoutId = window.setTimeout(() => {
+    removeNotice(notice.id)
+    render()
+  }, 4000)
+
+  noticeTimers.set(notice.id, timeoutId)
+}
+
+function removeNotice(noticeId) {
+  state.notices = state.notices.filter((notice) => notice.id !== noticeId)
+  const timeoutId = noticeTimers.get(noticeId)
+  if (timeoutId) {
+    clearTimeout(timeoutId)
+    noticeTimers.delete(noticeId)
+  }
 }
 
 function updatePedidoTotal() {
@@ -808,11 +855,11 @@ function render() {
     <div class="shell">
       ${renderNavbar()}
       <main class="content">
-        ${renderAlerts()}
         ${renderConfigBanner()}
         ${renderRouteView()}
       </main>
     </div>
+    ${renderAlerts()}
   `
 
   updatePedidoTotal()
@@ -856,8 +903,13 @@ function renderAlerts() {
   if (state.notices.length === 0) {
     return ''
   }
-  return `<section class="alerts">${state.notices
-    .map((notice) => `<article class="alert-item">${escapeHtml(notice)}</article>`)
+  return `<section class="alerts" role="status" aria-live="polite">${state.notices
+    .map(
+      (notice) => `<article class="alert-item toast" data-notice-id="${escapeHtml(notice.id)}">
+        <p>${escapeHtml(notice.message)}</p>
+        <button class="toast-close" type="button" data-action="close-notice" data-id="${escapeHtml(notice.id)}" aria-label="Cerrar notificacion">x</button>
+      </article>`,
+    )
     .join('')}</section>`
 }
 
