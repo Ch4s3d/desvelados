@@ -49,7 +49,11 @@ textarea {
   font: inherit;
 }
 
-a {
+a,
+a:link,
+a:visited,
+a:hover,
+a:active {
   text-decoration: none !important;
   color: inherit !important;
 }
@@ -151,6 +155,8 @@ h3,
   background: var(--glass-fallback);
   border: 1px solid var(--line);
   box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
 }
 
 .card,
@@ -203,6 +209,8 @@ h3,
   border-radius: var(--radius-pill);
   padding: 10px 16px;
   background: var(--glass-fallback);
+  backdrop-filter: blur(8px) saturate(118%);
+  -webkit-backdrop-filter: blur(8px) saturate(118%);
   color: var(--soft-light);
   font-weight: 700;
   cursor: pointer;
@@ -690,6 +698,8 @@ textarea::placeholder {
   padding: 10px 16px;
   font-weight: 700;
   background: var(--glass-fallback);
+  backdrop-filter: blur(8px) saturate(118%);
+  -webkit-backdrop-filter: blur(8px) saturate(118%);
   color: var(--soft-light);
   cursor: pointer;
 }
