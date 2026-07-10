@@ -1,0 +1,13 @@
+{
+  "projects": {},
+  "targets": {
+    "desvelados-wa": {
+      "hosting": {
+        "default": [
+          "desvelados-wa"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

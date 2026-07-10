@@ -104,7 +104,7 @@ function setupAuthWatcher() {
 }
 
 function setupRouteWatcher() {
-  window.addEventListener('hashchange', () => {
+  window.addEventListener('popstate', () => {
     enforceRouteAccess(true)
     syncAdminStreams()
     render()
@@ -112,30 +112,28 @@ function setupRouteWatcher() {
 }
 
 function normalizeHashRoute() {
+  const rawPath = window.location.pathname.replace(/^\/+|\/+$/g, '').toLowerCase()
   const rawHash = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase()
-  const rawPath = window.location.pathname.replace(/\/+$/, '').toLowerCase()
 
-  if (rawPath === '/admin') {
-    return 'admin'
-  }
+  const routeFromPath = rawPath || ''
+  const candidate = routeFromPath || rawHash || 'menu'
 
-  if (!rawHash) {
-    return 'menu'
-  }
-
-  if (PUBLIC_ROUTES.has(rawHash) || PRIVATE_ROUTES.has(rawHash)) {
-    return rawHash
+  if (PUBLIC_ROUTES.has(candidate) || PRIVATE_ROUTES.has(candidate)) {
+    return candidate
   }
 
   return 'menu'
 }
 
-function setRoute(route) {
-  const target = `#/${route}`
-  const basePath = window.location.pathname.replace(/\/admin\/?$/i, '/')
+function routeToPath(route) {
+  return `/${route}`
+}
 
-  if (window.location.hash !== target || window.location.pathname.toLowerCase() === '/admin') {
-    window.history.replaceState(null, '', `${basePath}${target}`)
+function setRoute(route) {
+  const targetPath = routeToPath(route)
+
+  if (window.location.pathname !== targetPath || window.location.hash) {
+    window.history.replaceState(null, '', targetPath)
   }
 
   state.route = route
@@ -155,7 +153,7 @@ function enforceRouteAccess(redirectIfNeeded = false) {
     }
 
     state.route = 'admin'
-    if (redirectIfNeeded && window.location.hash !== '#/admin') {
+    if (redirectIfNeeded && window.location.pathname !== routeToPath('admin')) {
       setRoute('admin')
     }
     return
@@ -170,7 +168,7 @@ function enforceRouteAccess(redirectIfNeeded = false) {
   }
 
   state.route = desired
-  if (redirectIfNeeded && window.location.hash !== `#/${desired}`) {
+  if (redirectIfNeeded && window.location.pathname !== routeToPath(desired)) {
     setRoute(desired)
   }
 }
@@ -823,13 +821,13 @@ function render() {
 function renderNavbar() {
   return `
     <header class="topbar">
-      <a class="brand" href="#/dashboard">
+      <a class="brand" href="/dashboard">
         <span class="brand__title">Desvelados</span>
       </a>
       <nav class="nav-links" aria-label="Navegacion principal">
-        <a class="nav-link ${state.route === 'dashboard' ? 'is-active' : ''}" href="#/dashboard">Inicio</a>
-        <a class="nav-link ${state.route === 'menu' ? 'is-active' : ''}" href="#/menu">Menu</a>
-        ${isAuthorizedUser() ? `<a class="nav-link ${state.route === 'edicion' ? 'is-active' : ''}" href="#/edicion">Edicion</a>` : ''}
+        <a class="nav-link ${state.route === 'dashboard' ? 'is-active' : ''}" href="/dashboard">Inicio</a>
+        <a class="nav-link ${state.route === 'menu' ? 'is-active' : ''}" href="/menu">Menu</a>
+        ${isAuthorizedUser() ? `<a class="nav-link ${state.route === 'edicion' ? 'is-active' : ''}" href="/edicion">Edicion</a>` : ''}
       </nav>
       ${renderNavAuthArea() ? `<div class="topbar-auth">${renderNavAuthArea()}</div>` : ''}
     </header>

@@ -3,7 +3,7 @@
     "rules": "firestore.rules"
   },
   "hosting": {
-    "site": "voydesvelado",
+    "target": "default",
     "public": "dist",
     "ignore": [
       "firebase.json",

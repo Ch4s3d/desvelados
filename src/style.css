@@ -4,8 +4,9 @@
   --muted: #a0a0a0;
   --line: rgba(255, 255, 255, 0.16);
   --line-soft: rgba(255, 255, 255, 0.08);
-  --glass: rgba(255, 255, 255, 0.05);
+  --glass: rgba(255, 255, 255, 0.08);
   --glass-strong: rgba(255, 255, 255, 0.1);
+  --glass-fallback: rgba(20, 20, 20, 0.42);
   --shadow-soft: 0 12px 34px rgba(0, 0, 0, 0.24);
   --radius-xl: 24px;
   --radius-lg: 16px;
@@ -25,27 +26,19 @@ html,
 body {
   margin: 0;
   min-height: 100%;
-  background: transparent;
+  background-color: transparent;
   color: var(--light);
   font-family: 'Elms Sans', 'Trebuchet MS', 'Segoe UI', sans-serif;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }
 
-html {
-  position: relative;
-}
-
-html::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: -2;
-  pointer-events: none;
+body {
   background-image: var(--bg-mobile-image);
   background-position: left center;
   background-repeat: no-repeat;
   background-size: cover;
+  background-attachment: fixed;
 }
 
 body,
@@ -54,11 +47,6 @@ input,
 select,
 textarea {
   font: inherit;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
 }
 
 h1,
@@ -155,9 +143,7 @@ h3,
 .hero-meta article,
 .editor-tab,
 .topbar {
-  background: var(--glass);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: var(--glass-fallback);
   border: 1px solid var(--line);
   box-shadow: var(--shadow-soft);
 }
@@ -211,12 +197,10 @@ h3,
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
   padding: 10px 16px;
-  background: var(--glass);
+  background: var(--glass-fallback);
   color: var(--soft-light);
   font-weight: 700;
   cursor: pointer;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
 }
 
@@ -700,11 +684,9 @@ textarea::placeholder {
   border-radius: var(--radius-pill);
   padding: 10px 16px;
   font-weight: 700;
-  background: var(--glass);
+  background: var(--glass-fallback);
   color: var(--soft-light);
   cursor: pointer;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .order-subnav__tab:hover,
@@ -850,10 +832,38 @@ textarea::placeholder {
   animation: floatIn 0.35s ease both;
 }
 
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topbar,
+  .card,
+  .alert-item,
+  .menu-item-card,
+  .order-card,
+  .inventory-row,
+  .access-row,
+  .pick-item,
+  .total-box,
+  .cash-box,
+  .empty,
+  .hero-meta article,
+  .editor-tab,
+  .topbar {
+    background: var(--glass);
+    backdrop-filter: blur(12px) saturate(118%);
+    -webkit-backdrop-filter: blur(12px) saturate(118%);
+  }
+
+  .menu-category-tab,
+  .order-subnav__tab {
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(8px) saturate(118%);
+    -webkit-backdrop-filter: blur(8px) saturate(118%);
+  }
+}
+
 @media (min-width: 920px) {
-  html::before {
+  body {
     background-image: var(--bg-desktop-image);
-    background-position: center;
+    background-position: left center;
   }
 
   .topbar {
