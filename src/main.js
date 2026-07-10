@@ -21,9 +21,9 @@ import {
 } from 'firebase/firestore'
 
 const PUBLIC_ROUTES = new Set(['dashboard', 'menu', 'admin'])
-const PRIVATE_ROUTES = new Set(['edicion'])
-const EDITOR_TABS = ['pedidos', 'catalogo', 'insumos', 'caja']
-const PEDIDO_VIEWS = ['new', 'active', 'history']
+const PRIVATE_ROUTES = new Set(['edicion', 'nueva-orden'])
+const EDITOR_TABS = ['resumen', 'pedidos', 'catalogo', 'insumos', 'caja']
+const PEDIDO_VIEWS = ['active', 'history']
 const ORDER_STATES = ['Pendiente', 'Preparando', 'Entregado', 'Pagado']
 const MENU_CATEGORIES = ['Platos Fuertes', 'Bebidas', 'Postres']
 const BOOTSTRAP_ADMIN_EMAIL = 'j0bsch453d@gmail.com'
@@ -53,8 +53,8 @@ const appRoot = document.querySelector('#app')
 const state = {
   route: 'menu',
   menuCategory: MENU_CATEGORIES[0],
-  editorTab: 'pedidos',
-  pedidoView: 'new',
+  editorTab: 'resumen',
+  pedidoView: 'active',
   isBooting: true,
   user: null,
   accessProfile: null,
@@ -63,6 +63,16 @@ const state = {
   pedidos: [],
   inventario: [],
   notices: [],
+  mobileSidebarOpen: false,
+  shouldAnimateView: true,
+  viewAnimationToken: 0,
+  orderDraft: {
+    mesa: '',
+    query: '',
+    items: [],
+    editingItemId: null,
+    customMode: false,
+  },
   editingMenuId: null,
 }
 
@@ -83,6 +93,7 @@ const provider = firebaseApp ? new GoogleAuthProvider() : null
 
 setupAnalytics()
 setupRouteWatcher()
+setupViewportWatcher()
 setupMenuStream()
 setupAuthWatcher()
 attachEvents()
@@ -107,9 +118,19 @@ function setupAuthWatcher() {
 
 function setupRouteWatcher() {
   window.addEventListener('popstate', () => {
+    triggerViewAnimation()
     enforceRouteAccess(true)
     syncAdminStreams()
     render()
+  })
+}
+
+function setupViewportWatcher() {
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 768 && state.mobileSidebarOpen) {
+      state.mobileSidebarOpen = false
+      render()
+    }
   })
 }
 
@@ -133,12 +154,17 @@ function routeToPath(route) {
 
 function setRoute(route) {
   const targetPath = routeToPath(route)
+  const nextRoute = String(route || '').toLowerCase()
 
   if (window.location.pathname !== targetPath || window.location.hash) {
     window.history.replaceState(null, '', targetPath)
   }
 
-  state.route = route
+  if (state.route !== nextRoute) {
+    triggerViewAnimation()
+  }
+
+  state.route = nextRoute
 }
 
 function enforceRouteAccess(redirectIfNeeded = false) {
@@ -277,10 +303,30 @@ function attachEvents() {
     }
 
     const action = actionNode.dataset.action
+    const clickedInsideMobileSidebar = Boolean(actionNode.closest('.mobile-sidebar'))
+
+    if (clickedInsideMobileSidebar && action !== 'close-mobile-sidebar') {
+      state.mobileSidebarOpen = false
+    }
+
+    if (action === 'toggle-mobile-sidebar') {
+      state.mobileSidebarOpen = true
+      render()
+      return
+    }
+
+    if (action === 'close-mobile-sidebar') {
+      state.mobileSidebarOpen = false
+      render()
+      return
+    }
 
     if (action === 'set-editor-tab') {
       const nextTab = actionNode.dataset.tab
       if (EDITOR_TABS.includes(nextTab)) {
+        if (state.editorTab !== nextTab) {
+          triggerViewAnimation()
+        }
         state.editorTab = nextTab
         render()
       }
@@ -290,9 +336,28 @@ function attachEvents() {
     if (action === 'set-pedido-view') {
       const nextView = actionNode.dataset.view
       if (PEDIDO_VIEWS.includes(nextView)) {
+        if (state.pedidoView !== nextView) {
+          triggerViewAnimation()
+        }
         state.pedidoView = nextView
         render()
       }
+      return
+    }
+
+    if (action === 'go-new-order-screen') {
+      state.editorTab = 'pedidos'
+      state.mobileSidebarOpen = false
+      setRoute('nueva-orden')
+      render()
+      return
+    }
+
+    if (action === 'back-to-pedidos') {
+      state.editorTab = 'pedidos'
+      state.mobileSidebarOpen = false
+      setRoute('edicion')
+      render()
       return
     }
 
@@ -305,19 +370,145 @@ function attachEvents() {
       return
     }
 
+    if (action === 'set-order-query') {
+      state.orderDraft.query = actionNode.dataset.query || ''
+      render()
+      return
+    }
+
+    if (action === 'add-order-item') {
+      const itemId = actionNode.dataset.id
+      addOrderItemById(itemId)
+      render()
+      return
+    }
+
+    if (action === 'order-item-plus') {
+      const draftId = actionNode.dataset.id
+      const item = state.orderDraft.items.find((entry) => entry.draftId === draftId)
+      if (!item) {
+        return
+      }
+      item.cantidad += 1
+      render()
+      return
+    }
+
+    if (action === 'order-item-minus') {
+      const draftId = actionNode.dataset.id
+      const item = state.orderDraft.items.find((entry) => entry.draftId === draftId)
+      if (!item) {
+        return
+      }
+      item.cantidad -= 1
+      if (item.cantidad <= 0) {
+        removeOrderDraftItem(draftId)
+      }
+      render()
+      return
+    }
+
+    if (action === 'order-item-remove') {
+      const draftId = actionNode.dataset.id
+      removeOrderDraftItem(draftId)
+      render()
+      return
+    }
+
+    if (action === 'order-item-edit') {
+      const draftId = actionNode.dataset.id
+      state.orderDraft.editingItemId = state.orderDraft.editingItemId === draftId ? null : draftId
+      render()
+      return
+    }
+
+    if (action === 'toggle-order-modifier') {
+      const draftId = actionNode.dataset.id
+      const modifierKey = actionNode.dataset.modifier
+      toggleOrderModifier(draftId, modifierKey)
+      render()
+      return
+    }
+
+    if (action === 'save-order-note') {
+      const draftId = actionNode.dataset.id
+      const noteNode = document.querySelector(`[data-order-note-input="${draftId}"]`)
+      const item = state.orderDraft.items.find((entry) => entry.draftId === draftId)
+      if (!noteNode || !item) {
+        return
+      }
+      item.note = noteNode.value?.trim() || ''
+      pushNotice('Detalles de platillo actualizados.')
+      state.orderDraft.editingItemId = null
+      render()
+      return
+    }
+
+    if (action === 'add-custom-item') {
+      const nameNode = document.querySelector('[data-custom-name]')
+      const priceNode = document.querySelector('[data-custom-price]')
+      const nombre = nameNode?.value?.trim()
+      const precio = Number(priceNode?.value || 0)
+
+      if (!nombre || Number.isNaN(precio) || precio < 0) {
+        pushNotice('Escribe nombre y precio valido para el platillo personalizado.')
+        render()
+        return
+      }
+
+      state.orderDraft.items.push({
+        draftId: createDraftId(),
+        id: null,
+        nombre,
+        categoria: 'Personalizado',
+        basePrecio: precio,
+        cantidad: 1,
+        modifiers: [],
+        note: '',
+        isCustom: true,
+      })
+
+      if (nameNode) {
+        nameNode.value = ''
+      }
+      if (priceNode) {
+        priceNode.value = ''
+      }
+
+      render()
+      return
+    }
+
+    if (action === 'set-route') {
+      event.preventDefault()
+      const nextRoute = actionNode.dataset.route
+      if (!PUBLIC_ROUTES.has(nextRoute) && !PRIVATE_ROUTES.has(nextRoute)) {
+        return
+      }
+      state.mobileSidebarOpen = false
+      setRoute(nextRoute)
+      enforceRouteAccess(true)
+      syncAdminStreams()
+      render()
+      return
+    }
+
     if (action === 'go-menu') {
+      state.mobileSidebarOpen = false
       setRoute('menu')
       render()
       return
     }
 
     if (action === 'login') {
+      state.mobileSidebarOpen = false
       await handleLogin()
       return
     }
 
     if (action === 'logout') {
       await signOut(auth)
+      state.mobileSidebarOpen = false
       state.editingMenuId = null
       enforceRouteAccess(true)
       render()
@@ -457,9 +648,31 @@ function attachEvents() {
     }
   })
 
-  document.addEventListener('change', (event) => {
-    if (event.target.matches('[data-menu-pick]')) {
-      updatePedidoTotal()
+  document.addEventListener('input', (event) => {
+    if (event.target.matches('[data-order-item-note]')) {
+      const draftId = event.target.dataset.id
+      const item = state.orderDraft.items.find((entry) => entry.draftId === draftId)
+      if (!item) {
+        return
+      }
+      item.note = event.target.value || ''
+      return
+    }
+
+    if (event.target.matches('[data-order-table]')) {
+      state.orderDraft.mesa = event.target.value || ''
+      return
+    }
+
+    if (event.target.matches('[data-order-search]')) {
+      state.orderDraft.query = event.target.value || ''
+      render()
+      return
+    }
+
+    if (event.target.matches('[data-order-custom-toggle]')) {
+      state.orderDraft.customMode = event.target.checked
+      render()
     }
   })
 }
@@ -527,13 +740,12 @@ async function createPedido(formData) {
     return
   }
 
-  const mesa = formData.get('mesa')?.toString().trim()
-  const selectedIds = formData.getAll('platillos')
-  const platillos = getVisibleMenuItems().filter((item) => selectedIds.includes(item.id))
-  const total = platillos.reduce((sum, item) => sum + Number(item.precio || 0), 0)
+  const mesa = state.orderDraft.mesa || formData.get('mesa')?.toString().trim()
+  const platillos = state.orderDraft.items
+  const total = getOrderDraftTotal()
 
   if (!mesa || platillos.length === 0) {
-    pushNotice('Captura mesa y selecciona al menos un platillo.')
+    pushNotice('Captura mesa y agrega al menos un platillo a la comanda.')
     render()
     return
   }
@@ -543,8 +755,16 @@ async function createPedido(formData) {
     platillos: platillos.map((item) => ({
       id: item.id,
       nombre: item.nombre,
-      precio: Number(item.precio || 0),
+      precio: Number(getOrderItemUnitPrice(item)),
+      cantidad: Number(item.cantidad || 1),
       categoria: item.categoria,
+      modificadores: (item.modifiers || []).map((modifier) => ({
+        key: modifier.key,
+        label: modifier.label,
+        delta: Number(modifier.delta || 0),
+      })),
+      nota: item.note || null,
+      personalizado: item.isCustom === true,
     })),
     total,
     estado: 'Pendiente',
@@ -552,6 +772,102 @@ async function createPedido(formData) {
     creadoEn: serverTimestamp(),
     actualizadoEn: serverTimestamp(),
   })
+
+  state.orderDraft.items = []
+  state.orderDraft.editingItemId = null
+  state.orderDraft.query = ''
+  state.orderDraft.mesa = ''
+}
+
+function createDraftId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function getOrderModifierOptions() {
+  const dynamicOptions = state.inventario
+    .filter((item) => item.en_uso)
+    .slice(0, 6)
+    .map((item) => ({
+      key: `sin-${item.id}`,
+      label: `Sin ${item.nombre}`,
+      delta: 0,
+    }))
+
+  return [
+    { key: 'doble-carne', label: 'Doble carne', delta: 35 },
+    { key: 'huevo-extra', label: 'Huevo extra', delta: 12 },
+    { key: 'queso-extra', label: 'Queso extra', delta: 18 },
+    ...dynamicOptions,
+  ]
+}
+
+function addOrderItemById(itemId) {
+  const menuItem = getVisibleMenuItems().find((item) => item.id === itemId)
+  if (!menuItem) {
+    return
+  }
+
+  const existing = state.orderDraft.items.find(
+    (item) => item.id === menuItem.id && !item.isCustom && (item.modifiers || []).length === 0 && !item.note,
+  )
+
+  if (existing) {
+    existing.cantidad += 1
+    return
+  }
+
+  state.orderDraft.items.push({
+    draftId: createDraftId(),
+    id: menuItem.id,
+    nombre: menuItem.nombre,
+    categoria: menuItem.categoria,
+    basePrecio: Number(menuItem.precio || 0),
+    cantidad: 1,
+    modifiers: [],
+    note: '',
+    isCustom: false,
+  })
+}
+
+function removeOrderDraftItem(draftId) {
+  state.orderDraft.items = state.orderDraft.items.filter((item) => item.draftId !== draftId)
+  if (state.orderDraft.editingItemId === draftId) {
+    state.orderDraft.editingItemId = null
+  }
+}
+
+function getOrderItemUnitPrice(item) {
+  const extras = (item.modifiers || []).reduce((sum, modifier) => sum + Number(modifier.delta || 0), 0)
+  return Number(item.basePrecio || 0) + extras
+}
+
+function getOrderItemTotal(item) {
+  return getOrderItemUnitPrice(item) * Number(item.cantidad || 1)
+}
+
+function getOrderDraftTotal() {
+  return state.orderDraft.items.reduce((sum, item) => sum + getOrderItemTotal(item), 0)
+}
+
+function toggleOrderModifier(draftId, modifierKey) {
+  const item = state.orderDraft.items.find((entry) => entry.draftId === draftId)
+  if (!item) {
+    return
+  }
+
+  const options = getOrderModifierOptions()
+  const option = options.find((entry) => entry.key === modifierKey)
+  if (!option) {
+    return
+  }
+
+  const exists = (item.modifiers || []).find((modifier) => modifier.key === modifierKey)
+  if (exists) {
+    item.modifiers = item.modifiers.filter((modifier) => modifier.key !== modifierKey)
+    return
+  }
+
+  item.modifiers = [...(item.modifiers || []), option]
 }
 
 async function saveMenuItem(formData) {
@@ -769,7 +1085,30 @@ function getActiveOrders() {
 }
 
 function getClosedOrders() {
-  return state.pedidos.filter((pedido) => pedido.cerrado).slice(0, 8)
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const startOfTomorrow = new Date(startOfToday)
+  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1)
+
+  return state.pedidos
+    .filter((pedido) => {
+      if (!pedido.cerrado) {
+        return false
+      }
+
+      const referenceDate =
+        toDate(pedido.cerradoEn) ||
+        toDate(pedido.actualizadoEn) ||
+        toDate(pedido.pagadoEn) ||
+        toDate(pedido.creadoEn)
+
+      if (!referenceDate) {
+        return false
+      }
+
+      return referenceDate >= startOfToday && referenceDate < startOfTomorrow
+    })
+    .slice(0, 8)
 }
 
 function getPaidTodayTotal() {
@@ -833,11 +1172,36 @@ function updatePedidoTotal() {
   if (!totalNode) {
     return
   }
-  const selectedIds = [...document.querySelectorAll('[data-menu-pick]:checked')].map((item) => item.value)
-  const total = getVisibleMenuItems()
-    .filter((item) => selectedIds.includes(item.id))
-    .reduce((sum, item) => sum + Number(item.precio || 0), 0)
-  totalNode.textContent = currency(total)
+  totalNode.textContent = currency(getOrderDraftTotal())
+}
+
+function triggerViewAnimation() {
+  state.shouldAnimateView = true
+  state.viewAnimationToken = Date.now() + Math.floor(Math.random() * 1000)
+}
+
+function applyViewAnimationLifecycle() {
+  if (!state.shouldAnimateView) {
+    return
+  }
+
+  const shellNode = appRoot.querySelector('[data-view-animation]')
+  if (!shellNode) {
+    state.shouldAnimateView = false
+    return
+  }
+
+  const token = String(state.viewAnimationToken)
+  const clearAnimationClass = () => {
+    if (shellNode.dataset.viewAnimation !== token) {
+      return
+    }
+    shellNode.classList.remove('is-view-animating')
+  }
+
+  shellNode.addEventListener('animationend', clearAnimationClass, { once: true })
+  window.setTimeout(clearAnimationClass, 420)
+  state.shouldAnimateView = false
 }
 
 function render() {
@@ -852,7 +1216,7 @@ function render() {
   }
 
   appRoot.innerHTML = `
-    <div class="shell">
+    <div class="shell ${state.shouldAnimateView ? 'is-view-animating' : ''}" data-view-animation="${state.viewAnimationToken}">
       ${renderNavbar()}
       <main class="content">
         ${renderConfigBanner()}
@@ -862,22 +1226,66 @@ function render() {
     ${renderAlerts()}
   `
 
+  applyViewAnimationLifecycle()
   updatePedidoTotal()
 }
 
 function renderNavbar() {
+  const isMobileSidebarOpen = window.matchMedia('(max-width: 768px)').matches && state.mobileSidebarOpen
+  const navAuthArea = renderNavAuthArea()
+
   return `
     <header class="topbar">
-      <a class="brand" href="/dashboard">
+      <a class="brand" href="/dashboard" data-action="set-route" data-route="dashboard">
         <span class="brand__title">Desvelados</span>
       </a>
+      <button class="mobile-menu-button" type="button" data-action="toggle-mobile-sidebar" aria-label="Abrir menu" aria-expanded="${isMobileSidebarOpen ? 'true' : 'false'}" aria-controls="mobile-sidebar">
+        <i class="bi bi-list" aria-hidden="true"></i>
+      </button>
       <nav class="nav-links" aria-label="Navegacion principal">
-        <a class="nav-link ${state.route === 'dashboard' ? 'is-active' : ''}" href="/dashboard">Inicio</a>
-        <a class="nav-link ${state.route === 'menu' ? 'is-active' : ''}" href="/menu">Menu</a>
-        ${isAuthorizedUser() ? `<a class="nav-link ${state.route === 'edicion' ? 'is-active' : ''}" href="/edicion">Edicion</a>` : ''}
+        <a class="nav-link ${state.route === 'dashboard' ? 'is-active' : ''}" href="/dashboard" data-action="set-route" data-route="dashboard">Inicio</a>
+        <a class="nav-link ${state.route === 'menu' ? 'is-active' : ''}" href="/menu" data-action="set-route" data-route="menu">Menu</a>
+        ${
+          isAuthorizedUser()
+            ? `<a class="nav-link nav-link--icon ${state.route === 'edicion' || state.route === 'nueva-orden' ? 'is-active' : ''}" href="/edicion" data-action="set-route" data-route="edicion" aria-label="Edicion" title="Edicion"><span class="nav-link__icon" aria-hidden="true"><i class="bi bi-pencil-fill"></i></span><span class="nav-link__text">Edicion</span></a>`
+            : ''
+        }
       </nav>
-      ${renderNavAuthArea() ? `<div class="topbar-auth">${renderNavAuthArea()}</div>` : ''}
+      ${navAuthArea ? `<div class="topbar-auth">${navAuthArea}</div>` : ''}
     </header>
+    <button class="mobile-sidebar-overlay ${isMobileSidebarOpen ? 'open' : ''}" type="button" data-action="close-mobile-sidebar" aria-label="Cerrar menu"></button>
+    <aside id="mobile-sidebar" class="mobile-sidebar ${isMobileSidebarOpen ? 'open' : ''}" aria-label="Menu movil">
+      <header class="mobile-sidebar__head">
+        <strong>Menu</strong>
+        <button class="mobile-sidebar__close" type="button" data-action="close-mobile-sidebar" aria-label="Cerrar menu">×</button>
+      </header>
+      <nav class="mobile-sidebar__nav" aria-label="Navegacion movil">
+        <a class="mobile-sidebar__link ${state.route === 'dashboard' ? 'is-active' : ''}" href="/dashboard" data-action="set-route" data-route="dashboard">Inicio</a>
+        <a class="mobile-sidebar__link ${state.route === 'menu' ? 'is-active' : ''}" href="/menu" data-action="set-route" data-route="menu">Menu</a>
+        ${
+          isAuthorizedUser()
+            ? `<button class="button button--cta mobile-sidebar__quick" type="button" data-action="go-new-order-screen">⚡ Nueva Orden</button>`
+            : ''
+        }
+        ${
+          isAuthorizedUser()
+            ? `<a class="mobile-sidebar__link ${state.route === 'edicion' || state.route === 'nueva-orden' ? 'is-active' : ''}" href="/edicion" data-action="set-route" data-route="edicion"><span aria-hidden="true"><i class="bi bi-pencil-fill"></i></span><span>Edicion</span></a>`
+            : ''
+        }
+        ${
+          isBootstrapAdmin()
+            ? `<a class="mobile-sidebar__link ${state.route === 'admin' ? 'is-active' : ''}" href="/admin" data-action="set-route" data-route="admin"><span aria-hidden="true"><i class="bi bi-gear-fill"></i></span><span>Administrador</span></a>`
+            : ''
+        }
+      </nav>
+      <div class="mobile-sidebar__footer">
+        ${
+          state.user
+            ? `<button class="button button--ghost mobile-sidebar__logout" type="button" data-action="logout">Cerrar Sesion</button>`
+            : `<button class="button button--ghost mobile-sidebar__logout" type="button" data-action="login">Iniciar Sesion</button>`
+        }
+      </div>
+    </aside>
   `
 }
 
@@ -888,14 +1296,30 @@ function renderNavAuthArea() {
 
   if (!isAuthorizedUser()) {
     return `
-      <span class="pending-pill">Acceso en revision</span>
-      <button class="button button--ghost" type="button" data-action="logout">Cerrar Sesion</button>
+      <span class="pending-pill role-pill" title="Acceso en revision" aria-label="Acceso en revision">
+        <span class="role-pill__icon" aria-hidden="true"><i class="bi bi-hourglass-split"></i></span>
+        <span class="role-pill__text">En revision</span>
+      </span>
+      <button class="button button--ghost icon-action" type="button" data-action="logout" aria-label="Cerrar sesion" title="Cerrar sesion">
+        <span class="icon-action__icon" aria-hidden="true"><i class="bi bi-box-arrow-right"></i></span>
+        <span class="icon-action__text">Cerrar Sesion</span>
+      </button>
     `
   }
 
   return `
-    <span class="user-pill">${isBootstrapAdmin() ? 'Administrador' : 'Editor'}</span>
-    <button class="button button--ghost" type="button" data-action="logout">Cerrar Sesion</button>
+    <button class="button button--ghost icon-action quick-order-nav" type="button" data-action="go-new-order-screen" aria-label="Nueva orden" title="Nueva orden">
+      <span class="icon-action__icon" aria-hidden="true"><i class="bi bi-lightning-charge-fill"></i></span>
+      <span class="icon-action__text">Nueva Orden</span>
+    </button>
+    <span class="user-pill role-pill" title="${isBootstrapAdmin() ? 'Administrador' : 'Editor'}" aria-label="${isBootstrapAdmin() ? 'Administrador' : 'Editor'}">
+      <span class="role-pill__icon" aria-hidden="true"><i class="bi ${isBootstrapAdmin() ? 'bi-gear-fill' : 'bi-pencil-fill'}"></i></span>
+      <span class="role-pill__text">${isBootstrapAdmin() ? 'Administrador' : 'Editor'}</span>
+    </span>
+    <button class="button button--ghost icon-action" type="button" data-action="logout" aria-label="Cerrar sesion" title="Cerrar sesion">
+      <span class="icon-action__icon" aria-hidden="true"><i class="bi bi-box-arrow-right"></i></span>
+      <span class="icon-action__text">Cerrar Sesion</span>
+    </button>
   `
 }
 
@@ -944,6 +1368,14 @@ function renderRouteView() {
     }
 
     return renderPrivateAdminView()
+  }
+
+  if (state.route === 'nueva-orden') {
+    if (!isAuthorizedUser()) {
+      return renderUnauthorizedAdminState()
+    }
+
+    return renderNewOrderScreen()
   }
 
   return renderPublicDashboardView()
@@ -1080,14 +1512,15 @@ function renderUnauthorizedAdminState() {
 }
 
 function renderPrivateAdminView() {
-  const currentTab = EDITOR_TABS.includes(state.editorTab) ? state.editorTab : 'pedidos'
+  const currentTab = EDITOR_TABS.includes(state.editorTab) ? state.editorTab : 'resumen'
 
   return `
     <section class="admin-layout editor-shell">
       <aside class="card sidebar editor-sidebar">
         <p class="eyebrow">Panel de control</p>
         <h2>Edicion</h2>
-        <nav class="sidebar-links editor-tabs" aria-label="Herramientas de edicion">
+        <nav class="sidebar-links editor-tabs editor-tabs--rail" aria-label="Herramientas de edicion">
+          <button class="sidebar-link editor-tab ${currentTab === 'resumen' ? 'is-active' : ''}" type="button" data-action="set-editor-tab" data-tab="resumen">Resumen</button>
           <button class="sidebar-link editor-tab ${currentTab === 'pedidos' ? 'is-active' : ''}" type="button" data-action="set-editor-tab" data-tab="pedidos">Pedidos y Comandas</button>
           <button class="sidebar-link editor-tab ${currentTab === 'catalogo' ? 'is-active' : ''}" type="button" data-action="set-editor-tab" data-tab="catalogo">Catalogo</button>
           <button class="sidebar-link editor-tab ${currentTab === 'insumos' ? 'is-active' : ''}" type="button" data-action="set-editor-tab" data-tab="insumos">Insumos</button>
@@ -1095,7 +1528,6 @@ function renderPrivateAdminView() {
         </nav>
       </aside>
       <section class="admin-main">
-        ${renderAdminKpis()}
         ${renderAdminModule(currentTab)}
       </section>
     </section>
@@ -1114,6 +1546,14 @@ function renderAdminKpis() {
 }
 
 function renderAdminModule(tab) {
+  if (tab === 'resumen') {
+    return `
+      <section class="module-grid">
+        ${renderAdminKpis()}
+      </section>
+    `
+  }
+
   if (tab === 'catalogo') {
     return renderMenuCrudModule()
   }
@@ -1238,10 +1678,9 @@ function renderInventarioRow(item) {
 }
 
 function renderPedidosModule() {
-  const menuItems = getVisibleMenuItems()
-  const currentView = PEDIDO_VIEWS.includes(state.pedidoView) ? state.pedidoView : 'new'
+  const currentView = PEDIDO_VIEWS.includes(state.pedidoView) ? state.pedidoView : 'active'
 
-  let viewContent = renderPedidoCreateView(menuItems)
+  let viewContent = renderPedidoActiveView()
   if (currentView === 'active') {
     viewContent = renderPedidoActiveView()
   }
@@ -1252,7 +1691,6 @@ function renderPedidosModule() {
   return `
     <section class="module-grid order-workspace">
       <nav class="order-subnav" aria-label="Submenu de comandas">
-        <button class="order-subnav__tab ${currentView === 'new' ? 'is-active' : ''}" type="button" data-action="set-pedido-view" data-view="new">Nueva Orden</button>
         <button class="order-subnav__tab ${currentView === 'active' ? 'is-active' : ''}" type="button" data-action="set-pedido-view" data-view="active">Cocina (Activos)</button>
         <button class="order-subnav__tab ${currentView === 'history' ? 'is-active' : ''}" type="button" data-action="set-pedido-view" data-view="history">Historial (Cerrados)</button>
       </nav>
@@ -1261,44 +1699,159 @@ function renderPedidosModule() {
   `
 }
 
-function renderPedidoCreateView(menuItems) {
+function renderNewOrderScreen() {
+  const menuItems = getVisibleMenuItems()
   return `
-    <article class="card module-card">
-      <h2>Nueva Orden</h2>
-      <form class="form-grid form-grid--order" data-form="pedido">
-        <div class="order-create-layout">
-          <section class="order-create-main">
-            <label><span>Mesa</span><input name="mesa" placeholder="Ej. 4" required /></label>
-            <div>
-              <span>Platillos</span>
-              <div class="pick-grid">
+    <section class="card module-card new-order-screen">
+      <header class="new-order-screen__head">
+        <button class="button button--ghost" type="button" data-action="back-to-pedidos">← Volver</button>
+        <h2>Nueva Orden</h2>
+      </header>
+      ${renderPedidoCreateView(menuItems)}
+    </section>
+  `
+}
+
+function renderPedidoCreateView(menuItems) {
+  const query = state.orderDraft.query.trim().toLowerCase()
+  const filteredMenu = query
+    ? menuItems.filter(
+        (item) =>
+          (item.nombre || '').toLowerCase().includes(query) ||
+          (item.descripcion || '').toLowerCase().includes(query) ||
+          (item.categoria || '').toLowerCase().includes(query),
+      )
+    : menuItems
+  const editingItem = state.orderDraft.items.find((item) => item.draftId === state.orderDraft.editingItemId) || null
+  const modifierOptions = getOrderModifierOptions()
+
+  return `
+    <form class="form-grid form-grid--order new-order-form" data-form="pedido">
+      <div class="order-create-layout new-order-layout">
+          <section class="order-create-main new-order-panel card">
+            <div class="order-top-controls">
+              <label class="mesa-field"><span>Mesa</span>
+                <select name="mesa" class="mesa-select" data-order-table required>
+                  <option value="">Selecciona</option>
+                  ${Array.from(
+                    { length: 10 },
+                    (_, index) => `<option value="${index + 1}" ${String(index + 1) === String(state.orderDraft.mesa || '') ? 'selected' : ''}>${index + 1}</option>`,
+                  ).join('')}
+                </select>
+              </label>
+              <label class="order-mode-toggle">
+                <span class="order-mode-toggle__label">Platillo personalizado</span>
+                <input type="checkbox" data-order-custom-toggle ${state.orderDraft.customMode ? 'checked' : ''} />
+                <span class="order-mode-toggle__switch" aria-hidden="true"></span>
+              </label>
+            </div>
+
+            <div class="order-search-block ${state.orderDraft.customMode ? 'is-hidden' : ''}">
+              <span>Buscador de platillos</span>
+              <input data-order-search type="search" placeholder="Busca por nombre, categoria o descripcion" value="${escapeHtml(state.orderDraft.query)}" />
+              <div class="order-search-results">
                 ${
-                  menuItems.length > 0
-                    ? menuItems
+                  filteredMenu.length > 0
+                    ? filteredMenu
+                        .slice(0, 12)
                         .map(
                           (item) => `
-                            <label class="pick-item">
-                              <input type="checkbox" name="platillos" value="${item.id}" data-menu-pick />
-                              <span>${escapeHtml(item.nombre)}</span>
-                              <strong>${currency(item.precio)}</strong>
-                            </label>
+                            <article class="order-result-item">
+                              <div>
+                                <strong>${escapeHtml(item.nombre)}</strong>
+                                <p>${escapeHtml(item.categoria || 'Sin categoria')} · ${currency(item.precio)}</p>
+                              </div>
+                              <button class="button button--secondary" type="button" data-action="add-order-item" data-id="${item.id}">Agregar</button>
+                            </article>
                           `,
                         )
                         .join('')
-                    : '<article class="card empty">No hay platillos activos para comandas.</article>'
+                    : '<article class="card empty">No encontramos coincidencias para la busqueda.</article>'
                 }
               </div>
             </div>
+
+            <div class="order-custom-box ${state.orderDraft.customMode ? '' : 'is-hidden'}">
+              <span>Platillo improvisado</span>
+              <div class="order-custom-grid">
+                <input data-custom-name type="text" placeholder="Ej. Chilaquiles especiales" />
+                <input data-custom-price type="number" min="0" step="0.01" placeholder="Precio" />
+                <button class="button button--secondary" type="button" data-action="add-custom-item">+ Platillo Personalizado</button>
+              </div>
+            </div>
           </section>
-          <aside class="order-ticket card">
+          <aside class="order-ticket card new-order-ticket">
             <p class="eyebrow">Resumen</p>
             <h3>Ticket rapido</h3>
+            <div class="order-ticket-list">
+              ${
+                state.orderDraft.items.length > 0
+                  ? state.orderDraft.items
+                      .map(
+                        (item) => `
+                          <article class="order-ticket-item">
+                            <header>
+                              <div>
+                                <strong>${escapeHtml(item.nombre)}</strong>
+                                <p>${currency(getOrderItemUnitPrice(item))} c/u · ${escapeHtml(item.categoria || 'General')}</p>
+                              </div>
+                              <strong>${currency(getOrderItemTotal(item))}</strong>
+                            </header>
+                            <div class="order-ticket-controls">
+                              <button type="button" data-action="order-item-minus" data-id="${item.draftId}" aria-label="Disminuir cantidad">-</button>
+                              <span>${Number(item.cantidad || 1)}</span>
+                              <button type="button" data-action="order-item-plus" data-id="${item.draftId}" aria-label="Aumentar cantidad">+</button>
+                              <button type="button" data-action="order-item-edit" data-id="${item.draftId}">Editar</button>
+                              <button type="button" data-action="order-item-remove" data-id="${item.draftId}">Quitar</button>
+                            </div>
+                            <label class="order-item-note-field">
+                              <span>Nota</span>
+                              <input
+                                type="text"
+                                data-order-item-note
+                                data-id="${item.draftId}"
+                                placeholder="Ej. Sin cebolla"
+                                value="${escapeHtml(item.note || '')}"
+                              />
+                            </label>
+                            ${(item.modifiers || []).length > 0 || item.note ? `<p class="order-ticket-note">${escapeHtml([
+                              ...(item.modifiers || []).map((modifier) => modifier.label),
+                              item.note || '',
+                            ].filter(Boolean).join(' · '))}</p>` : ''}
+                          </article>
+                        `,
+                      )
+                      .join('')
+                  : '<article class="card empty">Agrega platillos para empezar la comanda.</article>'
+              }
+            </div>
+
+            ${
+              editingItem
+                ? `
+                  <section class="order-edit-panel card">
+                    <p class="eyebrow">Editar platillo</p>
+                    <h3>${escapeHtml(editingItem.nombre)}</h3>
+                    <div class="order-modifier-grid">
+                      ${modifierOptions
+                        .map((option) => {
+                          const checked = (editingItem.modifiers || []).some((modifier) => modifier.key === option.key)
+                          return `<button class="order-modifier ${checked ? 'is-active' : ''}" type="button" data-action="toggle-order-modifier" data-id="${editingItem.draftId}" data-modifier="${option.key}">${escapeHtml(option.label)} ${option.delta > 0 ? `(+${currency(option.delta)})` : ''}</button>`
+                        })
+                        .join('')}
+                    </div>
+                    <label><span>Notas</span><textarea data-order-note-input="${editingItem.draftId}" placeholder="Ej. Bien cocido, salsa aparte">${escapeHtml(editingItem.note || '')}</textarea></label>
+                    <button class="button button--secondary" type="button" data-action="save-order-note" data-id="${editingItem.draftId}">Guardar detalles</button>
+                  </section>
+                `
+                : ''
+            }
+
             <div class="total-box"><span>Total estimado</span><strong data-order-total>${currency(0)}</strong></div>
-            <button class="button" type="submit">Crear pedido</button>
+            <button class="button button--cta" type="submit">Crear Pedido</button>
           </aside>
-        </div>
-      </form>
-    </article>
+      </div>
+    </form>
   `
 }
 
@@ -1345,7 +1898,15 @@ function renderPedidoCard(pedido, isClosed = false) {
         <span class="order-state">${escapeHtml(pedido.estado || 'Pendiente')}</span>
       </header>
       <ul>
-        ${(pedido.platillos || []).map((item) => `<li>${escapeHtml(item.nombre)} · ${currency(item.precio)}</li>`).join('')}
+        ${(pedido.platillos || [])
+          .map((item) => {
+            const qty = Number(item.cantidad || 1)
+            const mods = (item.modificadores || []).map((modifier) => modifier.label).filter(Boolean)
+            const note = item.nota ? [item.nota] : []
+            const details = [...mods, ...note]
+            return `<li>${escapeHtml(item.nombre)} x${qty} · ${currency(Number(item.precio || 0) * qty)}${details.length > 0 ? ` <small>(${escapeHtml(details.join(' · '))})</small>` : ''}</li>`
+          })
+          .join('')}
       </ul>
       <footer>
         <select data-status-select="${pedido.id}" ${isClosed ? 'disabled' : ''}>
