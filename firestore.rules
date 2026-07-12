@@ -57,11 +57,25 @@ service cloud.firestore {
       allow create, update, delete: if isApprovedEditor();
     }
 
+    match /combos/{comboId} {
+      allow read: if true;
+      allow create, update, delete: if isApprovedEditor();
+    }
+
     match /pedidos/{pedidoId} {
       allow read, create, update, delete: if isApprovedEditor();
     }
 
     match /inventario/{ingredientId} {
+      allow read, create, update, delete: if isApprovedEditor();
+    }
+
+    match /app_config/{configId} {
+      allow read: if configId == 'public_profile';
+      allow create, update, delete: if isApprovedEditor();
+    }
+
+    match /notifications/{notificationId} {
       allow read, create, update, delete: if isApprovedEditor();
     }
 
