@@ -132,9 +132,16 @@ const state = {
   ingredientCreateModalOpen: false,
   editingMenuId: null,
   editingComboId: null,
+  menuFormDraft: createDefaultMenuFormDraft(),
   menuPriceDraft: '',
   comboDraft: createDefaultComboDraft(),
   recipeDraft: createDefaultRecipeDraft(),
+  inventorySearch: '',
+  inventorySelectedId: null,
+  inventoryDraft: createDefaultInventoryDraft(),
+  inventoryDraftDirty: false,
+  inventoryDraftSourceId: null,
+  inventoryMobileView: 'list',
 }
 
 const noticeTimers = new Map()
@@ -454,6 +461,12 @@ function syncAdminStreams() {
     subscriptions.notifications = null
     state.pedidos = []
     state.inventario = []
+    state.inventorySearch = ''
+    state.inventorySelectedId = null
+    state.inventoryDraft = createDefaultInventoryDraft()
+    state.inventoryDraftDirty = false
+    state.inventoryDraftSourceId = null
+    state.inventoryMobileView = 'list'
     state.notifications = []
     knownPedidoIds = new Set()
     lowStockAlertedIds = new Set()
@@ -476,6 +489,7 @@ function syncAdminStreams() {
           .map((entry) => ({ id: entry.id, ...entry.data() }))
           .sort((left, right) => (left.nombre || '').localeCompare(right.nombre || '', 'es'))
         state.inventario = nextInventory
+        syncInventorySelectionFromData()
         syncLowStockNotifications(nextInventory)
         render()
       })
@@ -767,47 +781,76 @@ function attachEvents() {
     }
 
     if (action === 'save-stock') {
-      const ingredientId = actionNode.dataset.id
-      const stockInput = document.querySelector(`[data-stock-input="${ingredientId}"]`)
-      const minStockInput = document.querySelector(`[data-stock-min="${ingredientId}"]`)
-      const priceInput = document.querySelector(`[data-price-package="${ingredientId}"]`)
-      const packageQtyInput = document.querySelector(`[data-package-qty="${ingredientId}"]`)
-      const packageUnitInput = document.querySelector(`[data-package-unit="${ingredientId}"]`)
-      const usageToggle = document.querySelector(`[data-usage-toggle="${ingredientId}"]`)
-      if (!ingredientId || !stockInput || !usageToggle || !minStockInput || !priceInput || !packageQtyInput || !packageUnitInput) {
-        return
-      }
-
-      const pricePaquete = Number(priceInput.value || 0)
-      const cantidadPaquete = Number(packageQtyInput.value || 0)
-      const unidadPaquete = normalizeInventoryUnit(packageUnitInput.value || 'pza')
-      const cantidadPaqueteBase = convertInventoryQuantity(cantidadPaquete, unidadPaquete)
-      const costoUnitarioBase = cantidadPaqueteBase > 0 ? pricePaquete / cantidadPaqueteBase : 0
-
-      await updateDoc(doc(db, 'inventario', ingredientId), {
-        stock: Number(stockInput.value || 0),
-        stockMinimo: Number(minStockInput.value || 0),
-        precioPaquete: pricePaquete,
-        cantidadPaquete,
-        unidadPaquete,
-        unidad: getInventoryBaseUnit(unidadPaquete),
-        unidadBase: getInventoryBaseUnit(unidadPaquete),
-        costoUnitarioBase,
-        costoUnitarioTexto: `${currency(costoUnitarioBase)} / ${formatInventoryUnit(getInventoryBaseUnit(unidadPaquete))}`,
-        en_uso: usageToggle.dataset.value === 'true',
-        actualizadoEn: serverTimestamp(),
-      })
+      await saveSelectedInventoryDraft()
       return
     }
 
     if (action === 'open-ingredient-create-modal') {
-      state.ingredientCreateModalOpen = true
+      state.inventorySelectedId = 'new'
+      state.inventoryDraft = createDefaultInventoryDraft()
+      state.inventoryDraftSourceId = 'new'
+      state.inventoryDraftDirty = false
+      state.inventoryMobileView = 'detail'
       render()
       return
     }
 
     if (action === 'close-ingredient-create-modal') {
-      state.ingredientCreateModalOpen = false
+      cancelInventoryDraft()
+      render()
+      return
+    }
+
+    if (action === 'select-inventory-item') {
+      const ingredientId = actionNode.dataset.id
+      if (!ingredientId) {
+        return
+      }
+
+      state.inventorySelectedId = ingredientId
+      syncInventorySelectionFromData(true)
+      state.inventoryMobileView = 'detail'
+      render()
+      return
+    }
+
+    if (action === 'inventory-back-to-list') {
+      state.inventoryMobileView = 'list'
+      render()
+      return
+    }
+
+    if (action === 'toggle-inventory-usage') {
+      state.inventoryDraft.en_uso = !state.inventoryDraft.en_uso
+      state.inventoryDraftDirty = true
+      render()
+      return
+    }
+
+    if (action === 'save-inventory-draft') {
+      await saveSelectedInventoryDraft()
+      return
+    }
+
+    if (action === 'cancel-inventory-draft') {
+      cancelInventoryDraft()
+      render()
+      return
+    }
+
+    if (action === 'delete-inventory-item') {
+      const selectedId = state.inventorySelectedId
+      if (!selectedId || selectedId === 'new' || !db) {
+        return
+      }
+
+      await deleteDoc(doc(db, 'inventario', selectedId))
+      pushNotice('Insumo eliminado.')
+      state.inventorySelectedId = null
+      state.inventoryDraftDirty = false
+      state.inventoryDraftSourceId = null
+      state.inventoryDraft = createDefaultInventoryDraft()
+      state.inventoryMobileView = 'list'
       render()
       return
     }
@@ -850,6 +893,7 @@ function attachEvents() {
 
       const nextValue = activeInput.value !== 'true'
       activeInput.value = nextValue ? 'true' : 'false'
+      state.menuFormDraft.activo = nextValue
       activeLabel.textContent = nextValue ? 'Visible en menu publico' : 'Oculto del menu publico'
       actionNode.dataset.value = nextValue ? 'true' : 'false'
       actionNode.classList.toggle('is-active', nextValue)
@@ -866,6 +910,7 @@ function attachEvents() {
 
       const nextValue = activeInput.value !== 'true'
       activeInput.value = nextValue ? 'true' : 'false'
+      state.menuFormDraft.activo = nextValue
       activeLabel.textContent = nextValue ? 'Visible en menu publico' : 'Oculto del menu publico'
       actionNode.dataset.value = nextValue ? 'true' : 'false'
       actionNode.classList.toggle('is-active', nextValue)
@@ -874,14 +919,66 @@ function attachEvents() {
     }
 
     if (action === 'add-recipe-row') {
-      state.recipeDraft.rows = [...state.recipeDraft.rows, createRecipeRow('existing')]
+      const rows = state.recipeDraft.rows || []
+      const pendingRow = rows.find((row) => !row.saved)
+      if (pendingRow) {
+        pendingRow.mode = 'existing'
+      } else {
+        state.recipeDraft.rows = [...rows, createRecipeRow('existing')]
+      }
       syncRecipePreview()
       render()
       return
     }
 
     if (action === 'add-recipe-new-row') {
-      state.recipeDraft.rows = [...state.recipeDraft.rows, createRecipeRow('new')]
+      const rows = state.recipeDraft.rows || []
+      const pendingRow = rows.find((row) => !row.saved)
+      if (pendingRow) {
+        pendingRow.mode = 'new'
+      } else {
+        state.recipeDraft.rows = [...rows, createRecipeRow('new')]
+      }
+      syncRecipePreview()
+      render()
+      return
+    }
+
+    if (action === 'save-recipe-row') {
+      const rowId = actionNode.dataset.rowId
+      const row = (state.recipeDraft.rows || []).find((entry) => entry.rowId === rowId)
+      if (!row) {
+        return
+      }
+
+      const validationMessage = getRecipeRowValidationMessage(row)
+      if (validationMessage) {
+        pushNotice(validationMessage)
+        render()
+        return
+      }
+
+      row.saved = true
+      syncRecipePreview()
+      render()
+      return
+    }
+
+    if (action === 'edit-recipe-row') {
+      const rowId = actionNode.dataset.rowId
+      const row = (state.recipeDraft.rows || []).find((entry) => entry.rowId === rowId)
+      if (!row) {
+        return
+      }
+
+      const pendingRow = (state.recipeDraft.rows || []).find((entry) => !entry.saved && entry.rowId !== rowId)
+      if (pendingRow) {
+        pushNotice('Guarda o elimina el insumo en captura antes de editar otro.')
+        render()
+        return
+      }
+
+      row.saved = false
       syncRecipePreview()
       render()
       return
@@ -902,6 +999,7 @@ function attachEvents() {
       state.editingMenuId = actionNode.dataset.id || null
       state.menuCreateModalOpen = false
       state.recipeDraft = buildRecipeDraftFromMenu(getMenuEditorItem())
+      state.menuFormDraft = createDefaultMenuFormDraft(getMenuEditorItem())
       state.menuPriceDraft = String(getMenuEditorItem()?.precio ?? '')
       render()
       return
@@ -910,6 +1008,7 @@ function attachEvents() {
     if (action === 'open-menu-create-modal') {
       state.menuCreateModalOpen = true
       state.editingMenuId = null
+      state.menuFormDraft = createDefaultMenuFormDraft()
       state.menuPriceDraft = ''
       state.recipeDraft = createDefaultRecipeDraft()
       render()
@@ -926,6 +1025,7 @@ function attachEvents() {
 
     if (action === 'close-menu-create-modal') {
       state.menuCreateModalOpen = false
+      state.menuFormDraft = createDefaultMenuFormDraft()
       state.recipeDraft = createDefaultRecipeDraft()
       state.menuPriceDraft = ''
       render()
@@ -942,6 +1042,7 @@ function attachEvents() {
 
     if (action === 'close-menu-modal') {
       state.editingMenuId = null
+      state.menuFormDraft = createDefaultMenuFormDraft()
       state.recipeDraft = createDefaultRecipeDraft()
       state.menuPriceDraft = ''
       render()
@@ -1148,9 +1249,37 @@ function attachEvents() {
       return
     }
 
+    if (event.target.matches('[data-inventory-search]')) {
+      state.inventorySearch = event.target.value || ''
+      render()
+      return
+    }
+
+    if (event.target.matches('[data-inventory-field]')) {
+      const field = event.target.dataset.inventoryField
+      if (!field) {
+        return
+      }
+
+      const isCheckbox = event.target.type === 'checkbox'
+      state.inventoryDraft[field] = isCheckbox ? event.target.checked : event.target.value || ''
+      state.inventoryDraftDirty = true
+      return
+    }
+
     if (event.target.matches('[data-menu-price]')) {
       state.menuPriceDraft = event.target.value || ''
       syncRecipePreview()
+      return
+    }
+
+    if (event.target.matches('[data-menu-field]')) {
+      const field = event.target.dataset.menuField
+      if (!field) {
+        return
+      }
+
+      state.menuFormDraft[field] = event.target.value || ''
       return
     }
 
@@ -1186,6 +1315,7 @@ function attachEvents() {
 
       row.mode = event.target.value === 'new' ? 'new' : 'existing'
       syncRecipePreview()
+      render()
       return
     }
 
@@ -1225,6 +1355,31 @@ function attachEvents() {
     if (advancedSettingsForm) {
       syncAdvancedSettingsSubmitState(advancedSettingsForm)
     }
+  })
+
+  document.addEventListener('change', (event) => {
+    if (event.target.matches('[data-inventory-field]')) {
+      const inventoryField = event.target.dataset.inventoryField
+      if (!inventoryField) {
+        return
+      }
+
+      const isCheckbox = event.target.type === 'checkbox'
+      state.inventoryDraft[inventoryField] = isCheckbox ? event.target.checked : event.target.value || ''
+      state.inventoryDraftDirty = true
+      return
+    }
+
+    if (!event.target.matches('[data-menu-field]')) {
+      return
+    }
+
+    const field = event.target.dataset.menuField
+    if (!field) {
+      return
+    }
+
+    state.menuFormDraft[field] = event.target.value || ''
   })
 }
 
@@ -1563,7 +1718,8 @@ async function saveMenuItem(formData, editingId = state.editingMenuId) {
   const ingredientes = parseIngredients(formData.get('ingredientes'))
   const activo = String(formData.get('activo') || 'true') === 'true'
   const salePrice = Number.isNaN(precio) ? 0 : precio
-  const recipeRows = state.recipeDraft.rows || []
+  const recipeRows = (state.recipeDraft.rows || []).filter((row) => row.saved)
+  const pendingRows = (state.recipeDraft.rows || []).filter((row) => !row.saved && !isRecipeRowEmpty(row))
 
   if (!nombre || !descripcion || !categoria || Number.isNaN(precio)) {
     pushNotice('Completa nombre, descripcion, precio y categoria.')
@@ -1571,8 +1727,8 @@ async function saveMenuItem(formData, editingId = state.editingMenuId) {
     return
   }
 
-  if (recipeRows.length === 0) {
-    pushNotice('Agrega al menos un insumo en la receta.')
+  if (pendingRows.length > 0) {
+    pushNotice('Guarda o elimina el insumo que estas capturando antes de guardar el platillo.')
     render()
     return
   }
@@ -1659,8 +1815,8 @@ async function saveMenuItem(formData, editingId = state.editingMenuId) {
     })
   }
 
-  if (resolvedRecipe.length === 0) {
-    pushNotice('La receta debe incluir al menos un insumo valido.')
+  if (recipeRows.length > 0 && resolvedRecipe.length === 0) {
+    pushNotice('Si agregas renglones de receta, captura al menos un insumo valido o elimina los renglones vacios.')
     render()
     return
   }
@@ -1698,6 +1854,7 @@ async function saveMenuItem(formData, editingId = state.editingMenuId) {
   }
 
   state.editingMenuId = null
+  state.menuFormDraft = createDefaultMenuFormDraft()
   state.menuPriceDraft = ''
   state.recipeDraft = createDefaultRecipeDraft()
   render()
@@ -1884,6 +2041,146 @@ function createDefaultComboDraft() {
   }
 }
 
+function createDefaultMenuFormDraft(menuItem = null) {
+  return {
+    nombre: menuItem?.nombre || '',
+    descripcion: menuItem?.descripcion || '',
+    categoria: menuItem?.categoria || '',
+    activo: menuItem?.activo !== false,
+  }
+}
+
+function createDefaultInventoryDraft(item = null) {
+  const packageUnit = normalizeInventoryUnit(item?.unidadPaquete || item?.unidadBase || item?.unidad || 'pza')
+  return {
+    nombre: item?.nombre || '',
+    stock: String(item?.stock ?? 0),
+    stockMinimo: String(item?.stockMinimo ?? 0),
+    precioPaquete: String(item?.precioPaquete ?? ''),
+    cantidadPaquete: String(item?.cantidadPaquete ?? ''),
+    unidadPaquete: packageUnit,
+    en_uso: item?.en_uso !== false,
+  }
+}
+
+function getSelectedInventoryItem() {
+  if (!state.inventorySelectedId || state.inventorySelectedId === 'new') {
+    return null
+  }
+  return state.inventario.find((item) => item.id === state.inventorySelectedId) || null
+}
+
+function syncInventorySelectionFromData(forceDraftRefresh = false) {
+  const hasNewSelection = state.inventorySelectedId === 'new'
+  const selectedItem = getSelectedInventoryItem()
+
+  if (!hasNewSelection && !selectedItem) {
+    state.inventorySelectedId = state.inventario[0]?.id || null
+  }
+
+  if (state.inventorySelectedId === 'new') {
+    if (forceDraftRefresh || state.inventoryDraftSourceId !== 'new') {
+      state.inventoryDraft = createDefaultInventoryDraft()
+      state.inventoryDraftSourceId = 'new'
+      state.inventoryDraftDirty = false
+    }
+    return
+  }
+
+  const currentItem = getSelectedInventoryItem()
+  if (!currentItem) {
+    state.inventoryDraft = createDefaultInventoryDraft()
+    state.inventoryDraftSourceId = null
+    state.inventoryDraftDirty = false
+    return
+  }
+
+  if (forceDraftRefresh || !state.inventoryDraftDirty || state.inventoryDraftSourceId !== currentItem.id) {
+    state.inventoryDraft = createDefaultInventoryDraft(currentItem)
+    state.inventoryDraftSourceId = currentItem.id
+    state.inventoryDraftDirty = false
+  }
+}
+
+function cancelInventoryDraft() {
+  if (state.inventorySelectedId === 'new') {
+    state.inventorySelectedId = state.inventario[0]?.id || null
+    state.inventoryMobileView = 'list'
+    syncInventorySelectionFromData(true)
+    return
+  }
+
+  syncInventorySelectionFromData(true)
+}
+
+function buildInventoryPayloadFromDraft(draft, currentItem = null) {
+  const unidadPaquete = normalizeInventoryUnit(draft.unidadPaquete || 'pza')
+  const cantidadPaquete = Number(draft.cantidadPaquete || 0)
+  const precioPaquete = Number(draft.precioPaquete || 0)
+  const cantidadPaqueteBase = convertInventoryQuantity(cantidadPaquete, unidadPaquete)
+  const costoUnitarioBase = cantidadPaqueteBase > 0 ? precioPaquete / cantidadPaqueteBase : 0
+  const unidadBase = getInventoryBaseUnit(unidadPaquete)
+
+  return {
+    ...(currentItem || {}),
+    nombre: String(draft.nombre || '').trim(),
+    stock: Number(draft.stock || 0),
+    stockMinimo: Number(draft.stockMinimo || 0),
+    unidad: unidadBase,
+    unidadBase,
+    unidadPaquete,
+    cantidadPaquete,
+    precioPaquete,
+    costoUnitarioBase,
+    costoUnitarioTexto: costoUnitarioBase > 0 ? `${currency(costoUnitarioBase)} / ${formatInventoryUnit(unidadBase)}` : '',
+    en_uso: draft.en_uso !== false,
+    actualizadoEn: serverTimestamp(),
+  }
+}
+
+async function saveSelectedInventoryDraft() {
+  if (!db) {
+    pushNotice('Firebase no esta configurado todavia.')
+    render()
+    return
+  }
+
+  const draft = state.inventoryDraft || createDefaultInventoryDraft()
+  const nombre = String(draft.nombre || '').trim()
+  if (!nombre) {
+    pushNotice('Escribe un nombre para el insumo.')
+    render()
+    return
+  }
+
+  const isNew = state.inventorySelectedId === 'new'
+  const payload = buildInventoryPayloadFromDraft(draft, getSelectedInventoryItem())
+
+  if (isNew && (!Number(payload.precioPaquete || 0) || !Number(payload.cantidadPaquete || 0))) {
+    pushNotice('Captura precio por paquete y cantidad del paquete.')
+    render()
+    return
+  }
+
+  if (isNew) {
+    const createdDoc = await addDoc(collection(db, 'inventario'), {
+      ...payload,
+      alertaActiva: false,
+      creadoEn: serverTimestamp(),
+    })
+    state.inventorySelectedId = createdDoc.id
+    state.inventoryMobileView = 'detail'
+    pushNotice('Insumo agregado.')
+  } else if (state.inventorySelectedId) {
+    await updateDoc(doc(db, 'inventario', state.inventorySelectedId), payload)
+    pushNotice('Insumo actualizado.')
+  }
+
+  state.inventoryDraftDirty = false
+  syncInventorySelectionFromData(true)
+  render()
+}
+
 function createDefaultRecipeDraft() {
   return {
     search: '',
@@ -1904,8 +2201,66 @@ function createRecipeRow(mode = 'existing') {
     unidadPaquete: 'g',
     stock: '',
     stockMinimo: '',
+    saved: false,
     enUso: true,
   }
+}
+
+function isRecipeRowEmpty(row) {
+  if (!row || typeof row !== 'object') {
+    return true
+  }
+
+  return ![
+    row.ingredientId,
+    row.nombre,
+    row.cantidad,
+    row.precioPaquete,
+    row.cantidadPaquete,
+    row.stock,
+    row.stockMinimo,
+  ]
+    .map((value) => String(value || '').trim())
+    .some(Boolean)
+}
+
+function getRecipeRowValidationMessage(row) {
+  if (!row || typeof row !== 'object') {
+    return 'No pudimos guardar el insumo en captura.'
+  }
+
+  if (row.mode === 'existing') {
+    if (!String(row.ingredientId || '').trim()) {
+      return 'Selecciona un insumo existente antes de guardarlo.'
+    }
+    if (Number(row.cantidad || 0) <= 0) {
+      return 'Captura una cantidad mayor a 0 para el insumo existente.'
+    }
+    return ''
+  }
+
+  const nombreInsumo = String(row.nombre || '').trim()
+  if (!nombreInsumo) {
+    return 'Escribe el nombre del insumo nuevo antes de guardarlo.'
+  }
+
+  if (Number(row.cantidad || 0) <= 0) {
+    return 'Captura una cantidad mayor a 0 para el insumo nuevo.'
+  }
+
+  const alreadyExists = state.inventario.some(
+    (item) => String(item.nombre || '').trim().toLowerCase() === nombreInsumo.toLowerCase(),
+  )
+
+  if (alreadyExists) {
+    return ''
+  }
+
+  if (Number(row.precioPaquete || 0) <= 0 || Number(row.cantidadPaquete || 0) <= 0) {
+    return 'Para un insumo nuevo captura precio y cantidad del paquete antes de guardarlo.'
+  }
+
+  return ''
 }
 
 function normalizeInventoryUnit(unit) {
@@ -2239,6 +2594,7 @@ function buildRecipeDraftFromMenu(menuItem) {
           unidadPaquete: item.unidadPaquete || 'g',
           stock: String(item.stock ?? ''),
           stockMinimo: String(item.stockMinimo ?? ''),
+          saved: true,
           enUso: item.enUso !== false,
         }))
       : [createRecipeRow('existing')],
@@ -2277,6 +2633,7 @@ function buildInventoryPayloadFromForm(formData, currentItem = null) {
 
 function getRecipeDraftItems() {
   return (state.recipeDraft.rows || [])
+    .filter((row) => row.saved)
     .map((row) => {
       if (row.mode === 'existing') {
         const ingredient = state.inventario.find((item) => item.id === row.ingredientId)
@@ -3310,6 +3667,9 @@ function renderMenuCrudModule() {
 }
 
 function renderMenuCreateModal() {
+  const formDraft = state.menuFormDraft || createDefaultMenuFormDraft()
+  const isActive = formDraft.activo !== false
+
   return `
     <button class="menu-edit-modal__overlay" type="button" data-action="close-menu-create-modal" aria-label="Cerrar nuevo platillo"></button>
     <section class="menu-edit-modal" role="dialog" aria-modal="true" aria-label="Agregar platillo">
@@ -3318,25 +3678,24 @@ function renderMenuCreateModal() {
         <button class="button button--ghost" type="button" data-action="close-menu-create-modal">Cerrar</button>
       </header>
       <form class="form-grid" data-form="menu-item-create">
-        <label><span>Nombre</span><input name="nombre" required /></label>
+        <label><span>Nombre</span><input name="nombre" data-menu-field="nombre" value="${escapeHtml(formDraft.nombre || '')}" required /></label>
         <label><span>Precio</span><input name="precio" type="number" min="0" step="0.01" value="${escapeHtml(state.menuPriceDraft)}" data-menu-price required /></label>
-        <label class="wide"><span>Descripcion</span><textarea name="descripcion" required></textarea></label>
+        <label class="wide"><span>Descripcion</span><textarea name="descripcion" data-menu-field="descripcion" required>${escapeHtml(formDraft.descripcion || '')}</textarea></label>
         <label><span>Categoria</span>
-          <select name="categoria" required>
+          <select name="categoria" data-menu-field="categoria" required>
             <option value="">Selecciona categoria</option>
-            ${MENU_CATEGORIES.map((category) => `<option value="${category}">${category}</option>`).join('')}
+            ${MENU_CATEGORIES.map((category) => `<option value="${category}" ${formDraft.categoria === category ? 'selected' : ''}>${category}</option>`).join('')}
           </select>
         </label>
-        <label class="wide"><span>Ingredientes (separados por comas)</span><input name="ingredientes" /></label>
         <section class="recipe-builder wide">
           ${renderRecipeConfigurator()}
         </section>
-        <input type="hidden" name="activo" value="true" data-menu-create-active />
+        <input type="hidden" name="activo" value="${isActive ? 'true' : 'false'}" data-menu-create-active />
         <label class="wide">
           <span>Estado</span>
-          <button class="status-toggle is-active" type="button" data-action="toggle-menu-create-active" data-value="true" aria-pressed="true">
+          <button class="status-toggle ${isActive ? 'is-active' : ''}" type="button" data-action="toggle-menu-create-active" data-value="${isActive ? 'true' : 'false'}" aria-pressed="${isActive ? 'true' : 'false'}">
             <span class="status-toggle__dot" aria-hidden="true"></span>
-            <span data-menu-create-active-label>Visible en menu publico</span>
+            <span data-menu-create-active-label>${isActive ? 'Visible en menu publico' : 'Oculto del menu publico'}</span>
           </button>
         </label>
         <div class="actions wide">
@@ -3359,6 +3718,9 @@ function renderCatalogCompactCard(item) {
 }
 
 function renderMenuEditModal(item) {
+  const formDraft = state.menuFormDraft || createDefaultMenuFormDraft(item)
+  const isActive = formDraft.activo !== false
+
   return `
     <button class="menu-edit-modal__overlay" type="button" data-action="close-menu-modal" aria-label="Cerrar detalles de platillo"></button>
     <section class="menu-edit-modal" role="dialog" aria-modal="true" aria-label="Editar platillo">
@@ -3367,25 +3729,25 @@ function renderMenuEditModal(item) {
         <button class="button button--ghost" type="button" data-action="close-menu-modal">Cerrar</button>
       </header>
       <form class="form-grid" data-form="menu-item-edit">
-        <label><span>Nombre</span><input name="nombre" value="${escapeHtml(item.nombre || '')}" required /></label>
+        <label><span>Nombre</span><input name="nombre" data-menu-field="nombre" value="${escapeHtml(formDraft.nombre || '')}" required /></label>
         <label><span>Precio</span><input name="precio" type="number" min="0" step="0.01" value="${escapeHtml(state.menuPriceDraft || item.precio || '')}" data-menu-price required /></label>
-        <label class="wide"><span>Descripcion</span><textarea name="descripcion" required>${escapeHtml(item.descripcion || '')}</textarea></label>
+        <label class="wide"><span>Descripcion</span><textarea name="descripcion" data-menu-field="descripcion" required>${escapeHtml(formDraft.descripcion || '')}</textarea></label>
         <label><span>Categoria</span>
-          <select name="categoria" required>
+          <select name="categoria" data-menu-field="categoria" required>
             <option value="">Selecciona categoria</option>
-            ${MENU_CATEGORIES.map((category) => `<option value="${category}" ${item.categoria === category ? 'selected' : ''}>${category}</option>`).join('')}
+            ${MENU_CATEGORIES.map((category) => `<option value="${category}" ${formDraft.categoria === category ? 'selected' : ''}>${category}</option>`).join('')}
           </select>
         </label>
         <label class="wide"><span>Ingredientes (separados por comas)</span><input name="ingredientes" value="${escapeHtml((item.ingredientes || []).join(', '))}" /></label>
         <section class="recipe-builder wide">
           ${renderRecipeConfigurator()}
         </section>
-        <input type="hidden" name="activo" value="${item.activo !== false ? 'true' : 'false'}" data-menu-edit-active />
+        <input type="hidden" name="activo" value="${isActive ? 'true' : 'false'}" data-menu-edit-active />
         <label class="wide">
           <span>Estado</span>
-          <button class="status-toggle ${item.activo !== false ? 'is-active' : ''}" type="button" data-action="toggle-menu-edit-active" data-value="${item.activo !== false ? 'true' : 'false'}" aria-pressed="${item.activo !== false ? 'true' : 'false'}">
+          <button class="status-toggle ${isActive ? 'is-active' : ''}" type="button" data-action="toggle-menu-edit-active" data-value="${isActive ? 'true' : 'false'}" aria-pressed="${isActive ? 'true' : 'false'}">
             <span class="status-toggle__dot" aria-hidden="true"></span>
-            <span data-menu-edit-active-label>${item.activo !== false ? 'Visible en menu publico' : 'Oculto del menu publico'}</span>
+            <span data-menu-edit-active-label>${isActive ? 'Visible en menu publico' : 'Oculto del menu publico'}</span>
           </button>
         </label>
         <div class="actions wide">
@@ -3450,12 +3812,35 @@ function renderRecipeConfigurator() {
 
 function renderRecipeRow(row, ingredientOptions) {
   const existingIngredients = ingredientOptions
+  if (row.saved) {
+    const linkedIngredient = state.inventario.find((item) => item.id === row.ingredientId)
+    const rowName = row.mode === 'existing' ? linkedIngredient?.nombre || row.nombre || 'Insumo existente' : row.nombre || 'Insumo nuevo'
+    const rowAmount = Number(row.cantidad || 0)
+    const rowUnit = formatInventoryUnit(row.unidad || 'g')
+
+    return `
+      <article class="recipe-row recipe-row--saved">
+        <header class="recipe-row__head">
+          <strong>${row.mode === 'existing' ? 'Insumo existente' : 'Insumo nuevo'}</strong>
+          <div class="recipe-row__tools">
+            <button class="button button--secondary" type="button" data-action="edit-recipe-row" data-row-id="${row.rowId}">Editar</button>
+            <button class="button button--ghost" type="button" data-action="remove-recipe-row" data-row-id="${row.rowId}">Quitar</button>
+          </div>
+        </header>
+        <p>${escapeHtml(rowName)} · ${rowAmount > 0 ? `${escapeHtml(String(rowAmount))} ${escapeHtml(rowUnit)}` : 'Sin cantidad'}</p>
+      </article>
+    `
+  }
+
   if (row.mode === 'new') {
     return `
       <article class="recipe-row recipe-row--new">
         <header class="recipe-row__head">
           <strong>Insumo nuevo</strong>
-          <button class="button button--ghost" type="button" data-action="remove-recipe-row" data-row-id="${row.rowId}">Quitar</button>
+          <div class="recipe-row__tools">
+            <button class="button button--secondary" type="button" data-action="save-recipe-row" data-row-id="${row.rowId}">Guardar insumo</button>
+            <button class="button button--ghost" type="button" data-action="remove-recipe-row" data-row-id="${row.rowId}">Quitar</button>
+          </div>
         </header>
         <div class="recipe-row__grid">
           <label><span>Nombre</span><input type="text" data-recipe-field data-row-id="${row.rowId}" data-field="nombre" value="${escapeHtml(row.nombre || '')}" /></label>
@@ -3484,6 +3869,7 @@ function renderRecipeRow(row, ingredientOptions) {
       <header class="recipe-row__head">
         <strong>Insumo existente</strong>
         <div class="recipe-row__tools">
+          <button class="button button--secondary" type="button" data-action="save-recipe-row" data-row-id="${row.rowId}">Guardar insumo</button>
           <button class="button button--ghost" type="button" data-action="remove-recipe-row" data-row-id="${row.rowId}">Quitar</button>
         </div>
       </header>
@@ -3662,32 +4048,149 @@ function getCatalogMenuSections() {
 }
 
 function renderInventarioModule() {
+  syncInventorySelectionFromData()
+
+  const search = String(state.inventorySearch || '').trim().toLowerCase()
+  const visibleItems = state.inventario.filter((item) => {
+    if (!search) {
+      return true
+    }
+    return [item.nombre, item.descripcion, item.categoria]
+      .filter(Boolean)
+      .some((field) => String(field).toLowerCase().includes(search))
+  })
+
   const lowStockCount = state.inventario.filter((item) => Number(item.stock || 0) <= Number(item.stockMinimo || 0) || Number(item.stock || 0) <= 0).length
+  const inUseCount = state.inventario.filter((item) => item.en_uso !== false).length
+  const inventoryValue = state.inventario.reduce((sum, item) => {
+    const stock = Number(item.stock || 0)
+    const cost = Number(item.costoUnitarioBase || getIngredientUnitCost(item) || 0)
+    return sum + stock * cost
+  }, 0)
+  const selectedItem = getSelectedInventoryItem()
+  const selectedName = state.inventorySelectedId === 'new'
+    ? 'Nuevo insumo'
+    : selectedItem?.nombre || 'Selecciona un insumo'
+  const usageBadge = state.inventoryDraft.en_uso ? '🟢 En uso' : '🔴 Inactivo'
 
   return `
     <section class="module-grid">
-      <article class="card module-card">
+      <article class="card module-card inventory-workspace">
         <header class="catalog-module-head">
           <div>
             <p class="eyebrow">Costeo y existencia</p>
             <h2>Control de Insumos</h2>
           </div>
-          <button class="catalog-add-button" type="button" data-action="open-ingredient-create-modal" aria-label="Agregar ingrediente" title="Agregar ingrediente">+</button>
+          <button class="catalog-add-button" type="button" data-action="open-ingredient-create-modal" aria-label="Nuevo insumo" title="Nuevo insumo">+ Nuevo</button>
         </header>
-        <div class="inventory-kpis">
-          <article class="card kpi"><span>Insumos</span><strong>${state.inventario.length}</strong></article>
-          <article class="card kpi"><span>Bajo minimo</span><strong>${lowStockCount}</strong></article>
+        <div class="inventory-kpis inventory-kpis--compact">
+          <article class="kpi inventory-kpi"><span>Insumos</span><strong>${state.inventario.length}</strong></article>
+          <article class="kpi inventory-kpi"><span>Bajo minimo</span><strong>${lowStockCount}</strong></article>
+          <article class="kpi inventory-kpi"><span>En uso</span><strong>${inUseCount}</strong></article>
+          <article class="kpi inventory-kpi"><span>Valor inventario</span><strong>${currency(inventoryValue)}</strong></article>
         </div>
-        <div class="stack">
-          ${
-            state.inventario.length > 0
-              ? state.inventario.map((item) => renderInventarioRow(item)).join('')
-              : '<article class="card empty">Sin insumos registrados.</article>'
-          }
+
+        <div class="inventory-layout ${state.inventoryMobileView === 'detail' ? 'is-detail-visible' : ''}">
+          <section class="inventory-list-panel card ${state.inventoryMobileView === 'detail' ? 'is-mobile-hidden' : ''}">
+            <label class="inventory-search">
+              <span>Buscar insumo</span>
+              <input type="search" placeholder="Busca por nombre" data-inventory-search value="${escapeHtml(state.inventorySearch)}" />
+            </label>
+            <div class="inventory-list">
+              ${
+                visibleItems.length > 0
+                  ? visibleItems.map((item) => renderInventoryListCard(item, item.id === state.inventorySelectedId)).join('')
+                  : '<article class="card empty">No encontramos insumos con ese filtro.</article>'
+              }
+            </div>
+          </section>
+
+          <section class="inventory-detail-panel card ${state.inventoryMobileView === 'list' ? 'is-mobile-hidden' : ''}">
+            <header class="inventory-detail-head">
+              <button class="button button--ghost inventory-mobile-back" type="button" data-action="inventory-back-to-list">Volver</button>
+              <div>
+                <p class="eyebrow">Informacion del insumo</p>
+                <h3>${escapeHtml(selectedName)}</h3>
+              </div>
+              <span class="inventory-status-badge ${state.inventoryDraft.en_uso ? 'is-active' : 'is-inactive'}">${usageBadge}</span>
+            </header>
+
+            ${state.inventorySelectedId || state.inventario.length === 0
+              ? `
+                <div class="inventory-detail-body">
+                  <section class="inventory-section">
+                    <h4>General</h4>
+                    <div class="inventory-field-grid">
+                      <label><span>Nombre</span><input type="text" data-inventory-field="nombre" value="${escapeHtml(state.inventoryDraft.nombre || '')}" /></label>
+                    </div>
+                  </section>
+
+                  <section class="inventory-section">
+                    <h4>Inventario</h4>
+                    <div class="inventory-field-grid">
+                      <label><span>Stock actual</span><input type="number" min="0" step="1" data-inventory-field="stock" value="${escapeHtml(state.inventoryDraft.stock || '0')}" /></label>
+                      <label><span>Stock minimo</span><input type="number" min="0" step="1" data-inventory-field="stockMinimo" value="${escapeHtml(state.inventoryDraft.stockMinimo || '0')}" /></label>
+                    </div>
+                  </section>
+
+                  <section class="inventory-section">
+                    <h4>Compra</h4>
+                    <div class="inventory-field-grid">
+                      <label><span>Precio por paquete</span><input type="number" min="0" step="0.01" data-inventory-field="precioPaquete" value="${escapeHtml(state.inventoryDraft.precioPaquete || '')}" /></label>
+                      <label><span>Cantidad del paquete</span><input type="number" min="0" step="0.01" data-inventory-field="cantidadPaquete" value="${escapeHtml(state.inventoryDraft.cantidadPaquete || '')}" /></label>
+                      <label><span>Unidad</span>
+                        <select data-inventory-field="unidadPaquete">
+                          ${INVENTORY_UNIT_OPTIONS.map((option) => `<option value="${option.value}" ${normalizeInventoryUnit(state.inventoryDraft.unidadPaquete || 'pza') === option.value ? 'selected' : ''}>${option.label}</option>`).join('')}
+                        </select>
+                      </label>
+                    </div>
+                  </section>
+
+                  <section class="inventory-section">
+                    <h4>Estado</h4>
+                    <label class="settings-switch inventory-usage-switch">
+                      <input type="checkbox" data-inventory-field="en_uso" ${state.inventoryDraft.en_uso ? 'checked' : ''} />
+                      <span class="settings-switch__track"><span class="settings-switch__thumb"></span></span>
+                      <span class="settings-switch__label">${state.inventoryDraft.en_uso ? 'En uso' : 'Inactivo'}</span>
+                    </label>
+                  </section>
+
+                  <footer class="inventory-actions">
+                    ${state.inventorySelectedId && state.inventorySelectedId !== 'new' ? '<button class="button button--ghost" type="button" data-action="delete-inventory-item">Eliminar</button>' : ''}
+                    <div class="inventory-actions__right">
+                      <button class="button button--ghost" type="button" data-action="cancel-inventory-draft">Cancelar</button>
+                      <button class="button button--cta" type="button" data-action="save-inventory-draft">Guardar cambios</button>
+                    </div>
+                  </footer>
+                </div>
+              `
+              : '<article class="card empty">Selecciona un insumo de la lista para editarlo o crea uno nuevo.</article>'}
+          </section>
         </div>
       </article>
-      ${state.ingredientCreateModalOpen ? renderIngredientCreateModal() : ''}
     </section>
+  `
+}
+
+function renderInventoryListCard(item, isSelected = false) {
+  const stock = Number(item.stock || 0)
+  const stockMinimo = Number(item.stockMinimo || 0)
+  const packageUnit = normalizeInventoryUnit(item.unidadPaquete || item.unidadBase || item.unidad || 'pza')
+  const unitCost = Number(item.costoUnitarioBase || getIngredientUnitCost(item) || 0)
+  const isLow = stock <= stockMinimo || stock <= 0
+
+  return `
+    <button class="inventory-list-card ${isSelected ? 'is-selected' : ''} ${isLow ? 'is-low' : ''}" type="button" data-action="select-inventory-item" data-id="${item.id}">
+      <div class="inventory-list-card__head">
+        <strong>${escapeHtml(item.nombre || 'Insumo')}</strong>
+        <span class="inventory-list-card__status ${item.en_uso ? 'is-active' : 'is-inactive'}">${item.en_uso ? 'Activo' : 'Inactivo'}</span>
+      </div>
+      <p>${unitCost > 0 ? `${currency(unitCost)} / ${escapeHtml(formatInventoryUnit(packageUnit))}` : 'Sin costo unitario'}</p>
+      <div class="inventory-list-card__stock">
+        <span>Stock</span>
+        <strong>${escapeHtml(String(stock))} ${escapeHtml(formatInventoryUnit(getInventoryBaseUnit(packageUnit)))}</strong>
+      </div>
+    </button>
   `
 }
 
