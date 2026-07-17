@@ -9,6 +9,7 @@ import {
 } from 'firebase/auth'
 import {
   addDoc,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -18,6 +19,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore'
 
 const PUBLIC_ROUTES = new Set(['dashboard', 'menu', 'admin'])
@@ -142,6 +144,9 @@ const state = {
   inventoryDraftDirty: false,
   inventoryDraftSourceId: null,
   inventoryMobileView: 'list',
+  currentShift: null,
+  mermas: [],
+  shifts: [],
 }
 
 const noticeTimers = new Map()
@@ -165,6 +170,8 @@ const subscriptions = {
   menu: null,
   settings: null,
   pedidos: null,
+  mermas: null,
+  shifts: null,
 }
 
 const firebaseApp = hasFirebaseConfig ? initializeApp(firebaseConfig) : null
@@ -178,6 +185,8 @@ setupViewportWatcher()
 setupMenuStream()
 setupCombosStream()
 setupNotificationsStream()
+setupMermasStream()
+setupShiftsStream()
 setupPublicSettingsStream()
 setupAuthWatcher()
 attachEvents()
@@ -401,6 +410,62 @@ function setupNotificationsStream() {
   })
 }
 
+function setupMermasStream() {
+  if (!db || !state.user || !isAuthorizedUser()) {
+    subscriptions.mermas?.()
+    subscriptions.mermas = null
+    state.mermas = []
+    return
+  }
+
+  subscriptions.mermas?.()
+  subscriptions.mermas = onSnapshot(collection(db, 'mermas'), (snapshot) => {
+    state.mermas = snapshot.docs
+      .map((entry) => ({ id: entry.id, ...entry.data() }))
+      .sort((left, right) => {
+        const leftTime = toMillis(left.registradoEn)
+        const rightTime = toMillis(right.registradoEn)
+        return rightTime - leftTime
+      })
+    render()
+  })
+}
+
+function setupShiftsStream() {
+  if (!db || !state.user || !isAuthorizedUser()) {
+    subscriptions.shifts?.()
+    subscriptions.shifts = null
+    state.shifts = []
+    return
+  }
+
+  subscriptions.shifts?.()
+  subscriptions.shifts = onSnapshot(collection(db, 'shifts'), (snapshot) => {
+    state.shifts = snapshot.docs
+      .map((entry) => ({ id: entry.id, ...entry.data() }))
+      .sort((left, right) => {
+        const leftTime = toMillis(right.fechaInicio)
+        const rightTime = toMillis(left.fechaInicio)
+        return rightTime - leftTime
+      })
+
+    // Si hay un turno abierto del usuario actual, sincronizarlo
+    const openShift = state.shifts.find(
+      (s) => s.estado === 'abierto' && s.vendedorEmail === getUserEmail(),
+    )
+    if (openShift && !state.currentShift) {
+      state.currentShift = {
+        id: openShift.id,
+        estado: 'abierto',
+        efectivoInicial: openShift.efectivoInicial,
+        ventasRegistradas: openShift.ventasRegistradas,
+      }
+    }
+
+    render()
+  })
+}
+
 function setupPublicSettingsStream() {
   if (!db) {
     loadingReadiness.settingsReady = true
@@ -513,6 +578,8 @@ function syncAdminStreams() {
   }
 
   setupNotificationsStream()
+  setupMermasStream()
+  setupShiftsStream()
 }
 
 function attachEvents() {
@@ -1543,10 +1610,14 @@ async function createPedido(formData) {
     total,
     estado: 'Pendiente',
     cerrado: false,
+    shiftId: state.currentShift?.id || null,
     tomadoEn: serverTimestamp(),
     creadoEn: serverTimestamp(),
     actualizadoEn: serverTimestamp(),
   })
+
+  // ✅ NUEVO: Descontar inventario automáticamente
+  await deductInventoryFromOrder(platillos)
 
   state.orderDraft.items = []
   state.orderDraft.editingItemId = null
@@ -2179,6 +2250,276 @@ async function saveSelectedInventoryDraft() {
   state.inventoryDraftDirty = false
   syncInventorySelectionFromData(true)
   render()
+}
+
+// ============================================================================
+// NUEVAS FUNCIONES: TURNOS, MERMAS, DEDUCCIÓN AUTOMÁTICA, Y FINANCIERO
+// ============================================================================
+
+/**
+ * Decrementa automáticamente inventario cuando se crea una orden
+ * Consulta recetas de cada platillo y resta insumos
+ */
+async function deductInventoryFromOrder(platillos) {
+  if (!db || !platillos || platillos.length === 0) return
+
+  try {
+    const batch = writeBatch(db)
+
+    for (const platillo of platillos) {
+      const menuItem = state.menu.find((m) => m.id === platillo.id)
+      if (!menuItem || !menuItem.receta) continue
+
+      // Por cada insumo en la receta del platillo
+      for (const recipeLine of menuItem.receta) {
+        if (!recipeLine.ingredientId) continue
+
+        const ingredient = state.inventario.find((i) => i.id === recipeLine.ingredientId)
+        if (!ingredient) continue
+
+        // Cantidad total a descontar = cantidad en receta × cantidad de platillos
+        const quantityToDeduct = Number(recipeLine.cantidad || 0) * Number(platillo.cantidad || 1)
+        if (quantityToDeduct <= 0) continue
+
+        const ingredientRef = doc(db, 'inventario', recipeLine.ingredientId)
+        const currentStock = Number(ingredient.stock || 0)
+        const newStock = Math.max(currentStock - quantityToDeduct, 0)
+
+        batch.update(ingredientRef, {
+          stock: newStock,
+          actualizadoEn: serverTimestamp(),
+        })
+      }
+    }
+
+    await batch.commit()
+  } catch (error) {
+    console.error('Error deducting inventory:', error)
+  }
+}
+
+/**
+ * Registra comida tirada (mermas) en la bitácora
+ * Descuenta del inventario y guarda registro
+ */
+async function registerWaste(ingredientId, quantityInBaseUnit, reason = 'otro') {
+  if (!db || !ingredientId) return
+
+  try {
+    const ingredient = state.inventario.find((i) => i.id === ingredientId)
+    if (!ingredient) {
+      pushNotice('No encontramos el insumo para registrar merma.')
+      return
+    }
+
+    const costPerUnit = Number(ingredient.costoUnitarioBase || 0)
+    const wasteCost = costPerUnit * Number(quantityInBaseUnit || 0)
+
+    // Guardar registro de merma
+    await addDoc(collection(db, 'mermas'), {
+      ingredientId,
+      ingredientNombre: ingredient.nombre,
+      cantidadBase: Number(quantityInBaseUnit || 0),
+      unidadBase: ingredient.unidadBase || 'g',
+      razon: reason,
+      costo: wasteCost,
+      registradoPor: getUserEmail(),
+      registradoEn: serverTimestamp(),
+      shiftId: state.currentShift?.id || null,
+    })
+
+    // Actualizar stock del insumo
+    const newStock = Math.max(Number(ingredient.stock || 0) - Number(quantityInBaseUnit || 0), 0)
+    await updateDoc(doc(db, 'inventario', ingredientId), {
+      stock: newStock,
+      actualizadoEn: serverTimestamp(),
+    })
+
+    pushNotice(`Merma registrada: ${ingredient.nombre} (${currency(wasteCost)})`)
+    render()
+  } catch (error) {
+    console.error('Error registering waste:', error)
+    pushNotice('Error al registrar merma.')
+  }
+}
+
+/**
+ * Abre un nuevo turno de vendedor
+ * Registra efectivo inicial y crea punto de control
+ */
+async function openShift(initialCash = 0, notes = '') {
+  if (!db) {
+    pushNotice('Firebase no esta configurado todavia.')
+    render()
+    return
+  }
+
+  try {
+    const shiftDoc = await addDoc(collection(db, 'shifts'), {
+      fechaInicio: serverTimestamp(),
+      vendedorEmail: getUserEmail(),
+      vendedorNombre: state.user?.displayName || 'Desconocido',
+      estado: 'abierto',
+      efectivoInicial: Number(initialCash || 0),
+      notasInicio: String(notes || '').trim(),
+      ventasRegistradas: 0,
+      costoMermas: 0,
+      totalSalidas: 0,
+      fechaCierre: null,
+      cierreFinal: null,
+    })
+
+    state.currentShift = {
+      id: shiftDoc.id,
+      estado: 'abierto',
+      efectivoInicial: Number(initialCash || 0),
+      ventasRegistradas: 0,
+    }
+
+    pushNotice(`✅ Turno abierto\nEfectivo inicial: ${currency(initialCash)}`)
+    render()
+  } catch (error) {
+    console.error('Error opening shift:', error)
+    pushNotice('Error al abrir turno.')
+  }
+}
+
+/**
+ * Registra compra o salida de caja durante el turno
+ * Ejemplo: compra de proteínas emergente, pago de terceros
+ */
+async function registerEmergencyCashOutflow(amount, reason = '', items = []) {
+  if (!db || !state.currentShift?.id) {
+    pushNotice('Necesitas tener un turno abierto para registrar salida.')
+    render()
+    return
+  }
+
+  try {
+    const outflow = {
+      monto: Number(amount || 0),
+      razon: String(reason || '').trim(),
+      items: items || [],
+      registradoEn: serverTimestamp(),
+      registradoPor: getUserEmail(),
+    }
+
+    await updateDoc(doc(db, 'shifts', state.currentShift.id), {
+      salidas: arrayUnion(outflow),
+    })
+
+    if (state.currentShift.salidas) {
+      state.currentShift.salidas.push(outflow)
+    } else {
+      state.currentShift.salidas = [outflow]
+    }
+
+    pushNotice(`💸 Salida registrada: ${currency(amount)} - ${reason}`)
+    render()
+  } catch (error) {
+    console.error('Error registering outflow:', error)
+    pushNotice('Error al registrar salida.')
+  }
+}
+
+/**
+ * Cierra el turno, calcula totales y segrega financiero 50/30/10/10
+ * Retorna resumen de cierre con segregación automática
+ */
+async function closeShift(finalCash = 0, notes = '') {
+  if (!db || !state.currentShift?.id) {
+    pushNotice('No hay turno abierto para cerrar.')
+    render()
+    return
+  }
+
+  try {
+    // Calcular totales del turno
+    const shiftPedidos = state.pedidos.filter((p) => p.shiftId === state.currentShift.id && p.estado === 'Pagado')
+    const totalSalesForShift = shiftPedidos.reduce((sum, p) => sum + Number(p.total || 0), 0)
+
+    const wasteEntries = state.mermas.filter((m) => m.shiftId === state.currentShift.id)
+    const totalWasteCost = wasteEntries.reduce((sum, m) => sum + m.costo, 0)
+
+    // Calcula diferencia de caja
+    const expectedCash = Number(state.currentShift.efectivoInicial || 0) + totalSalesForShift
+    const difference = Number(finalCash || 0) - expectedCash
+
+    // ✅ SEGREGACIÓN 50/30/10/10 AUTOMÁTICA
+    const operationAllocation = totalSalesForShift * 0.5 // 50% operaciones/insumos
+    const ownerSalary = totalSalesForShift * 0.3 // 30% dueño
+    const reserveFund = totalSalesForShift * 0.1 // 10% fondo de reserva
+    const discretionary = totalSalesForShift * 0.1 // 10% comodín/ahorro
+
+    await updateDoc(doc(db, 'shifts', state.currentShift.id), {
+      estado: 'cerrado',
+      efectivoFinal: Number(finalCash || 0),
+      diferencia: difference,
+      notasCierre: String(notes || '').trim(),
+      ventasDelTurno: totalSalesForShift,
+      costoMermas: totalWasteCost,
+      fechaCierre: serverTimestamp(),
+      segregacion: {
+        operaciones: operationAllocation,
+        duenoSalario: ownerSalary,
+        fondoReserva: reserveFund,
+        comodin: discretionary,
+      },
+    })
+
+    // Resumen de cierre
+    const closingSummary = `
+📋 CIERRE DE TURNO
+═══════════════════════════════════════
+Vendedor: ${state.user?.displayName || 'Desconocido'}
+Turno: ${new Date(state.currentShift.fechaInicio).toLocaleTimeString()}
+
+💰 VENTAS & CAJA
+───────────────────────────────────────
+Ventas registradas: ${currency(totalSalesForShift)}
+Mermas registradas: ${currency(totalWasteCost)}
+Efectivo inicial: ${currency(state.currentShift.efectivoInicial || 0)}
+Efectivo esperado: ${currency(expectedCash)}
+Efectivo final: ${currency(finalCash)}
+DIFERENCIA: ${difference > 0 ? '+' : ''}${currency(difference)}
+
+📊 SEGREGACIÓN (50/30/10/10)
+───────────────────────────────────────
+Operaciones/Insumos: ${currency(operationAllocation)}
+Salario Dueño: ${currency(ownerSalary)}
+Fondo de Reserva: ${currency(reserveFund)}
+Comodín/Ahorro: ${currency(discretionary)}
+
+⚠️ Notas: ${notes || 'Sin notas'}
+═══════════════════════════════════════`
+
+    pushNotice(closingSummary)
+    state.currentShift = null
+    render()
+  } catch (error) {
+    console.error('Error closing shift:', error)
+    pushNotice('Error al cerrar turno.')
+  }
+}
+
+/**
+ * Obtiene total de ventas pagadas en un turno específico
+ */
+function getPaidOrdersInShift(shiftId) {
+  if (!shiftId) return 0
+  return state.pedidos
+    .filter((p) => p.shiftId === shiftId && p.estado === 'Pagado')
+    .reduce((sum, p) => sum + Number(p.total || 0), 0)
+}
+
+/**
+ * Obtiene total de costos por mermas en un turno
+ */
+function getWasteCostInShift(shiftId) {
+  if (!shiftId) return 0
+  return state.mermas
+    .filter((m) => m.shiftId === shiftId)
+    .reduce((sum, m) => sum + m.costo, 0)
 }
 
 function createDefaultRecipeDraft() {

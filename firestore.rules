@@ -106,6 +106,14 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /mermas/{mermaId} {
+      allow read, create, update, delete: if isApprovedEditor();
+    }
+
+    match /shifts/{shiftId} {
+      allow read, create, update, delete: if isApprovedEditor();
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
