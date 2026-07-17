@@ -1,4 +1,5 @@
 import './style.css'
+import './style-shifts.css'
 import { initializeApp } from 'firebase/app'
 import {
   GoogleAuthProvider,
@@ -147,6 +148,30 @@ const state = {
   currentShift: null,
   mermas: [],
   shifts: [],
+  shiftOpenModalOpen: false,
+  shiftCloseModalOpen: false,
+  cashOutflowModalOpen: false,
+  wasteModalOpen: false,
+  shiftOpenDraft: {
+    efectivoInicial: '',
+    notasInicio: '',
+  },
+  shiftCloseDraft: {
+    efectivoFinal: '',
+    notasCierre: '',
+  },
+  cashOutflowDraft: {
+    monto: '',
+    razon: 'compra_insumos',
+    items: '',
+  },
+  wasteModalState: {
+    ingredientSearch: '',
+    selectedIngredient: null,
+    cantidadDraft: '',
+    unidadDraft: 'g',
+    razonDraft: 'error_cocina',
+  },
 }
 
 const noticeTimers = new Map()
@@ -584,6 +609,30 @@ function syncAdminStreams() {
 
 function attachEvents() {
   document.addEventListener('click', async (event) => {
+    // Cerrar modales al clickear overlay
+    if (event.target.classList.contains('modal-overlay')) {
+      if (state.shiftOpenModalOpen) {
+        state.shiftOpenModalOpen = false
+        render()
+        return
+      }
+      if (state.shiftCloseModalOpen) {
+        state.shiftCloseModalOpen = false
+        render()
+        return
+      }
+      if (state.cashOutflowModalOpen) {
+        state.cashOutflowModalOpen = false
+        render()
+        return
+      }
+      if (state.wasteModalOpen) {
+        state.wasteModalOpen = false
+        render()
+        return
+      }
+    }
+
     const actionNode = event.target.closest('[data-action]')
     if (!actionNode) {
       return
@@ -1223,6 +1272,183 @@ function attachEvents() {
       })
       return
     }
+
+    // ===== MANEJO DE MODALES DE TURNOS Y MERMAS =====
+
+    if (action === 'open-shift-open-modal') {
+      state.shiftOpenModalOpen = true
+      state.shiftOpenDraft = { efectivoInicial: '', notasInicio: '' }
+      render()
+      return
+    }
+
+    if (action === 'close-shift-open-modal' || action === 'close-modal-overlay' && event.target.matches('.modal-overlay')) {
+      state.shiftOpenModalOpen = false
+      render()
+      return
+    }
+
+    if (action === 'open-shift-close-modal') {
+      state.shiftCloseModalOpen = true
+      state.shiftCloseDraft = { efectivoFinal: '', notasCierre: '' }
+      render()
+      return
+    }
+
+    if (action === 'close-shift-close-modal') {
+      state.shiftCloseModalOpen = false
+      render()
+      return
+    }
+
+    if (action === 'open-cash-outflow-modal') {
+      state.cashOutflowModalOpen = true
+      state.cashOutflowDraft = { monto: '', razon: 'compra_insumos', items: '' }
+      render()
+      return
+    }
+
+    if (action === 'close-cash-outflow-modal') {
+      state.cashOutflowModalOpen = false
+      render()
+      return
+    }
+
+    if (action === 'set-outflow-reason') {
+      const reason = actionNode.dataset.reason
+      if (reason) {
+        state.cashOutflowDraft.razon = reason
+        render()
+      }
+      return
+    }
+
+    if (action === 'open-waste-modal') {
+      state.wasteModalOpen = true
+      state.wasteModalState = {
+        ingredientSearch: '',
+        selectedIngredient: null,
+        cantidadDraft: '',
+        unidadDraft: 'g',
+        razonDraft: 'error_cocina',
+      }
+      render()
+      return
+    }
+
+    if (action === 'close-waste-modal') {
+      state.wasteModalOpen = false
+      render()
+      return
+    }
+
+    if (action === 'waste-select-ingredient') {
+      const ingredientId = actionNode.dataset.id
+      const ingredient = state.inventario.find((i) => i.id === ingredientId)
+      if (ingredient) {
+        state.wasteModalState.selectedIngredient = ingredient
+        state.wasteModalState.cantidadDraft = ''
+        render()
+      }
+      return
+    }
+
+    if (action === 'clear-waste-ingredient') {
+      state.wasteModalState.selectedIngredient = null
+      state.wasteModalState.cantidadDraft = ''
+      render()
+      return
+    }
+
+    if (action === 'waste-set-reason') {
+      const reason = actionNode.dataset.reason
+      if (reason) {
+        state.wasteModalState.razonDraft = reason
+        render()
+      }
+      return
+    }
+
+    if (action === 'submit-shift-open') {
+      const formNode = document.querySelector('[data-form="shift-open"]')
+      if (!formNode) {
+        return
+      }
+      const formData = new FormData(formNode)
+      const efectivoInicial = Number(formData.get('efectivoInicial') || 0)
+      const notasInicio = String(formData.get('notasInicio') || '').trim()
+
+      openShift(efectivoInicial, notasInicio)
+      state.shiftOpenModalOpen = false
+      render()
+      return
+    }
+
+    if (action === 'submit-shift-close') {
+      const formNode = document.querySelector('[data-form="shift-close"]')
+      if (!formNode) {
+        return
+      }
+      const formData = new FormData(formNode)
+      const efectivoFinal = Number(formData.get('efectivoFinal') || 0)
+      const notasCierre = String(formData.get('notasCierre') || '').trim()
+
+      closeShift(efectivoFinal, notasCierre)
+      state.shiftCloseModalOpen = false
+      render()
+      return
+    }
+
+    if (action === 'submit-cash-outflow') {
+      if (!state.currentShift?.id) {
+        pushNotice('No hay turno abierto.')
+        return
+      }
+
+      const formNode = document.querySelector('[data-form="cash-outflow"]')
+      if (!formNode) {
+        return
+      }
+
+      const formData = new FormData(formNode)
+      const monto = Number(formData.get('monto') || 0)
+      const razon = String(formData.get('razon') || 'otro').trim()
+      const items = String(formData.get('items') || '').trim()
+
+      if (monto <= 0) {
+        pushNotice('Ingresa un monto válido.')
+        return
+      }
+
+      registerEmergencyCashOutflow(monto, razon, items ? items.split(',').map((s) => s.trim()) : [])
+      state.cashOutflowModalOpen = false
+      render()
+      return
+    }
+
+    if (action === 'submit-waste-entry') {
+      if (!state.currentShift?.id) {
+        pushNotice('No hay turno abierto.')
+        return
+      }
+
+      const wasteState = state.wasteModalState
+      if (!wasteState.selectedIngredient) {
+        pushNotice('Selecciona un insumo.')
+        return
+      }
+
+      const cantidad = Number(wasteState.cantidadDraft || 0)
+      if (cantidad <= 0) {
+        pushNotice('Ingresa una cantidad válida.')
+        return
+      }
+
+      registerWaste(wasteState.selectedIngredient.id, cantidad, wasteState.razonDraft)
+      state.wasteModalOpen = false
+      render()
+      return
+    }
   })
 
   document.addEventListener('submit', async (event) => {
@@ -1421,6 +1647,49 @@ function attachEvents() {
     const advancedSettingsForm = event.target.closest('[data-form="advanced-settings"]')
     if (advancedSettingsForm) {
       syncAdvancedSettingsSubmitState(advancedSettingsForm)
+    }
+
+    // ===== INPUTS DE MODALES DE TURNOS Y MERMAS =====
+
+    if (event.target.matches('[data-form="shift-open"] input, [data-form="shift-open"] textarea')) {
+      const name = event.target.name
+      if (name === 'efectivoInicial') {
+        state.shiftOpenDraft.efectivoInicial = event.target.value || ''
+      } else if (name === 'notasInicio') {
+        state.shiftOpenDraft.notasInicio = event.target.value || ''
+      }
+      return
+    }
+
+    if (event.target.matches('[data-form="shift-close"] input, [data-form="shift-close"] textarea')) {
+      const name = event.target.name
+      if (name === 'efectivoFinal') {
+        state.shiftCloseDraft.efectivoFinal = event.target.value || ''
+      } else if (name === 'notasCierre') {
+        state.shiftCloseDraft.notasCierre = event.target.value || ''
+      }
+      return
+    }
+
+    if (event.target.matches('[data-form="cash-outflow"] input')) {
+      const name = event.target.name
+      if (name === 'monto') {
+        state.cashOutflowDraft.monto = event.target.value || ''
+      } else if (name === 'items') {
+        state.cashOutflowDraft.items = event.target.value || ''
+      }
+      return
+    }
+
+    if (event.target.dataset.action === 'waste-search-ingredients') {
+      state.wasteModalState.ingredientSearch = event.target.value || ''
+      render()
+      return
+    }
+
+    if (event.target.dataset.action === 'waste-set-cantidad') {
+      state.wasteModalState.cantidadDraft = event.target.value || ''
+      return
     }
   })
 
@@ -3430,9 +3699,14 @@ function render() {
       ${renderNavbar()}
       <main class="content">
         ${renderConfigBanner()}
-        ${renderRouteView()}
+        ${isAuthorizedUser() && !state.currentShift ? renderShiftLockScreen() : renderRouteView()}
       </main>
+      ${renderShiftStatusBadge()}
     </div>
+    ${renderShiftOpenModal()}
+    ${renderShiftCloseModal()}
+    ${renderCashOutflowModal()}
+    ${renderWasteModal()}
     ${renderAlerts()}
     ${renderLoadingScreen()}
   `
@@ -3592,6 +3866,413 @@ function renderNotificationItem(notification) {
         ${unread ? `<button class="button button--secondary" type="button" data-action="mark-notification-read" data-id="${notification.id}">Marcar leida</button>` : '<span class="notification-item__read">Leida</span>'}
       </div>
     </article>
+  `
+}
+
+// ============================================================================
+// COMPONENTES UI: TURNOS, MERMAS, SALIDAS DE EFECTIVO (TOUCH-OPTIMIZED)
+// ============================================================================
+
+/**
+ * Panel flotante de estado del turno
+ * Siempre visible si el usuario está autorizado
+ */
+function renderShiftStatusBadge() {
+  if (!isAuthorizedUser() || !state.currentShift) {
+    return ''
+  }
+
+  const shiftData = state.shifts.find((s) => s.id === state.currentShift.id) || {}
+  const ventasDelTurno = getPaidOrdersInShift(state.currentShift.id)
+  const costeMermas = getWasteCostInShift(state.currentShift.id)
+  const efectivoEsperado = (state.currentShift.efectivoInicial || 0) + ventasDelTurno
+
+  return `
+    <aside class="shift-status-badge">
+      <div class="shift-status-badge__header">
+        <strong>
+          <span class="shift-status-badge__indicator ${state.currentShift ? 'open' : 'closed'}"></span>
+          Turno
+        </strong>
+        <span class="shift-status-badge__time">${new Date(state.currentShift.fechaInicio || Date.now()).toLocaleTimeString().slice(0, 5)}</span>
+      </div>
+      
+      <div class="shift-status-badge__metrics">
+        <div class="shift-metric">
+          <span class="shift-metric__label">Ventas</span>
+          <strong class="shift-metric__value">${currency(ventasDelTurno)}</strong>
+        </div>
+        <div class="shift-metric">
+          <span class="shift-metric__label">Gastos</span>
+          <strong class="shift-metric__value">${currency(costeMermas)}</strong>
+        </div>
+        <div class="shift-metric">
+          <span class="shift-metric__label">Caja</span>
+          <strong class="shift-metric__value">${currency(efectivoEsperado)}</strong>
+        </div>
+      </div>
+      
+      <div class="shift-status-badge__actions">
+        <button class="button button--small button--secondary" type="button" data-action="open-cash-outflow-modal" title="Registrar salida de efectivo">
+          <span aria-hidden="true">💸</span> Salida
+        </button>
+        <button class="button button--small button--secondary" type="button" data-action="open-waste-modal" title="Registrar merma">
+          <span aria-hidden="true">🗑️</span> Merma
+        </button>
+        <button class="button button--small button--ghost" type="button" data-action="open-shift-close-modal" title="Cerrar turno">
+          <span aria-hidden="true">✕</span>
+        </button>
+      </div>
+    </aside>
+  `
+}
+
+/**
+ * Modal para abrir un nuevo turno
+ */
+function renderShiftOpenModal() {
+  if (!isAuthorizedUser() || !state.shiftOpenModalOpen || state.currentShift) {
+    return ''
+  }
+
+  return `
+    <div class="modal-overlay" data-action="close-shift-open-modal"></div>
+    <dialog class="modal shift-open-modal" open>
+      <div class="modal__content">
+        <header class="modal__header">
+          <h2>Abrir Turno</h2>
+          <button type="button" class="modal__close" data-action="close-shift-open-modal" aria-label="Cerrar">×</button>
+        </header>
+        
+        <form class="modal__body shift-open-form" data-form="shift-open">
+          <div class="form-group">
+            <label for="shift-initial-cash">Efectivo Inicial (MXN)</label>
+            <input 
+              id="shift-initial-cash"
+              class="input input--numeric" 
+              type="number" 
+              step="0.01" 
+              min="0"
+              placeholder="0.00"
+              name="efectivoInicial"
+              value="${state.shiftOpenDraft.efectivoInicial}"
+              inputmode="decimal"
+              autofocus
+            />
+          </div>
+          
+          <div class="form-group">
+            <label for="shift-notes">Notas (Opcional)</label>
+            <textarea 
+              id="shift-notes"
+              class="input input--textarea"
+              name="notasInicio"
+              placeholder="Ej: Abierto normal, fondo de caja OK"
+              rows="3"
+            >${state.shiftOpenDraft.notasInicio}</textarea>
+          </div>
+          
+          <div class="modal__footer">
+            <button type="button" class="button button--ghost" data-action="close-shift-open-modal">Cancelar</button>
+            <button type="button" class="button button--cta" data-action="submit-shift-open">Abrir Turno</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+  `
+}
+
+/**
+ * Modal para cerrar turno con resumen de segregación
+ */
+function renderShiftCloseModal() {
+  if (!isAuthorizedUser() || !state.shiftCloseModalOpen || !state.currentShift) {
+    return ''
+  }
+
+  return `
+    <div class="modal-overlay" data-action="close-shift-close-modal"></div>
+    <dialog class="modal shift-close-modal" open>
+      <div class="modal__content">
+        <header class="modal__header">
+          <h2>Cerrar Turno</h2>
+          <button type="button" class="modal__close" data-action="close-shift-close-modal" aria-label="Cerrar">×</button>
+        </header>
+        
+        <form class="modal__body shift-close-form" data-form="shift-close">
+          <div class="form-group">
+            <label for="shift-final-cash">Efectivo en Caja (MXN)</label>
+            <input 
+              id="shift-final-cash"
+              class="input input--numeric" 
+              type="number" 
+              step="0.01" 
+              min="0"
+              placeholder="0.00"
+              name="efectivoFinal"
+              value="${state.shiftCloseDraft.efectivoFinal}"
+              inputmode="decimal"
+              autofocus
+            />
+          </div>
+          
+          <div class="form-group">
+            <label for="shift-close-notes">Notas (Opcional)</label>
+            <textarea 
+              id="shift-close-notes"
+              class="input input--textarea"
+              name="notasCierre"
+              placeholder="Ej: Día normal, faltó $50"
+              rows="3"
+            >${state.shiftCloseDraft.notasCierre}</textarea>
+          </div>
+          
+          <div class="modal__footer">
+            <button type="button" class="button button--ghost" data-action="close-shift-close-modal">Cancelar</button>
+            <button type="button" class="button button--cta" data-action="submit-shift-close">Cerrar & Ver Resumen</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+  `
+}
+
+/**
+ * Modal para registrar salida de efectivo (emergencias)
+ */
+function renderCashOutflowModal() {
+  if (!isAuthorizedUser() || !state.cashOutflowModalOpen || !state.currentShift) {
+    return ''
+  }
+
+  const reasons = [
+    { value: 'compra_insumos', label: '🍗 Proteínas', icon: '🍗' },
+    { value: 'hielo', label: '🧊 Hielo', icon: '🧊' },
+    { value: 'gas', label: '🔥 Gas', icon: '🔥' },
+    { value: 'otro', label: '❓ Otro', icon: '❓' },
+  ]
+
+  return `
+    <div class="modal-overlay" data-action="close-cash-outflow-modal"></div>
+    <dialog class="modal cash-outflow-modal" open>
+      <div class="modal__content">
+        <header class="modal__header">
+          <h2>Salida de Efectivo</h2>
+          <button type="button" class="modal__close" data-action="close-cash-outflow-modal" aria-label="Cerrar">×</button>
+        </header>
+        
+        <form class="modal__body cash-outflow-form" data-form="cash-outflow">
+          <div class="form-group">
+            <label for="outflow-amount">Monto (MXN)</label>
+            <input 
+              id="outflow-amount"
+              class="input input--numeric input--large" 
+              type="number" 
+              step="0.01" 
+              min="0"
+              placeholder="0.00"
+              name="monto"
+              value="${state.cashOutflowDraft.monto}"
+              inputmode="decimal"
+              autofocus
+            />
+          </div>
+          
+          <div class="form-group">
+            <label>¿Para qué?</label>
+            <div class="reason-buttons">
+              ${reasons
+                .map(
+                  (reason) => `
+                <button 
+                  type="button" 
+                  class="reason-btn ${state.cashOutflowDraft.razon === reason.value ? 'is-selected' : ''}"
+                  data-action="set-outflow-reason"
+                  data-reason="${reason.value}"
+                  title="${reason.label}"
+                >
+                  <span class="reason-btn__icon">${reason.icon}</span>
+                  <span class="reason-btn__label">${reason.label}</span>
+                </button>
+              `,
+                )
+                .join('')}
+            </div>
+          </div>
+          
+          <div class="form-group">
+            <label for="outflow-items">Artículos (Opcional)</label>
+            <input 
+              id="outflow-items"
+              class="input" 
+              type="text" 
+              placeholder="Ej: 2kg proteína, 5 bolsas hielo"
+              name="items"
+              value="${state.cashOutflowDraft.items}"
+            />
+          </div>
+          
+          <div class="modal__footer">
+            <button type="button" class="button button--ghost" data-action="close-cash-outflow-modal">Cancelar</button>
+            <button type="button" class="button button--cta" data-action="submit-cash-outflow">Registrar Salida</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+  `
+}
+
+/**
+ * Modal para registrar mermas (comida tirada)
+ */
+function renderWasteModal() {
+  if (!isAuthorizedUser() || !state.wasteModalOpen || !state.currentShift) {
+    return ''
+  }
+
+  const wasteState = state.wasteModalState
+  const filteredInventario = wasteState.ingredientSearch
+    ? state.inventario.filter((item) =>
+        item.nombre.toLowerCase().includes(wasteState.ingredientSearch.toLowerCase()),
+      )
+    : state.inventario.filter((item) => item.en_uso)
+
+  const reasons = [
+    { value: 'error_cocina', label: 'Comida quemada', icon: '🍳' },
+    { value: 'comida_tirada', label: 'Tirado', icon: '🗑️' },
+    { value: 'vencimiento', label: 'Vencido', icon: '🤢' },
+    { value: 'otro', label: 'Otro', icon: '❓' },
+  ]
+
+  return `
+    <div class="modal-overlay" data-action="close-waste-modal"></div>
+    <dialog class="modal waste-modal" open>
+      <div class="modal__content">
+        <header class="modal__header">
+          <h2>Registrar Merma</h2>
+          <button type="button" class="modal__close" data-action="close-waste-modal" aria-label="Cerrar">×</button>
+        </header>
+        
+        <div class="modal__body waste-form">
+          <!-- PASO 1: SELECCIONAR INSUMO -->
+          <div class="form-group waste-search">
+            <label for="waste-ingredient-search">Buscar Insumo</label>
+            <input 
+              id="waste-ingredient-search"
+              class="input" 
+              type="text" 
+              placeholder="Huevo, aguacate, queso..."
+              value="${escapeHtml(wasteState.ingredientSearch)}"
+              data-action="waste-search-ingredients"
+              autofocus
+            />
+          </div>
+          
+          ${
+            wasteState.selectedIngredient
+              ? `
+            <div class="waste-selected-ingredient">
+              <div class="waste-ingredient-info">
+                <strong>${escapeHtml(wasteState.selectedIngredient.nombre)}</strong>
+                <small>${wasteState.selectedIngredient.unidadBase || 'pieza'} | Stock: ${wasteState.selectedIngredient.stock || 0}</small>
+              </div>
+              <button type="button" class="button button--ghost" data-action="clear-waste-ingredient">Cambiar</button>
+            </div>
+            
+            <!-- PASO 2: CANTIDAD Y RAZÓN -->
+            <div class="form-group">
+              <label>Cantidad</label>
+              <div class="quantity-input-group">
+                <input 
+                  class="input input--numeric quantity-input" 
+                  type="number" 
+                  step="1" 
+                  min="0"
+                  placeholder="0"
+                  value="${wasteState.cantidadDraft}"
+                  data-action="waste-set-cantidad"
+                  inputmode="decimal"
+                />
+                <span class="quantity-input-group__unit">${wasteState.unidadDraft}</span>
+              </div>
+            </div>
+            
+            <div class="form-group">
+              <label>Razón</label>
+              <div class="reason-buttons waste-reasons">
+                ${reasons
+                  .map(
+                    (reason) => `
+                  <button 
+                    type="button" 
+                    class="reason-btn ${wasteState.razonDraft === reason.value ? 'is-selected' : ''}"
+                    data-action="waste-set-reason"
+                    data-reason="${reason.value}"
+                    title="${reason.label}"
+                  >
+                    <span class="reason-btn__icon">${reason.icon}</span>
+                    <span class="reason-btn__label">${reason.label}</span>
+                  </button>
+                `,
+                  )
+                  .join('')}
+              </div>
+            </div>
+            
+            <div class="modal__footer">
+              <button type="button" class="button button--ghost" data-action="close-waste-modal">Cancelar</button>
+              <button type="button" class="button button--cta" data-action="submit-waste-entry">Registrar Merma</button>
+            </div>
+          `
+              : `
+            <!-- LISTA DE INSUMOS -->
+            <div class="waste-ingredient-list">
+              ${filteredInventario.length > 0 ? `
+                ${filteredInventario
+                  .slice(0, 12)
+                  .map(
+                    (item) => `
+                  <button 
+                    type="button" 
+                    class="waste-ingredient-btn"
+                    data-action="waste-select-ingredient"
+                    data-id="${item.id}"
+                  >
+                    <strong>${escapeHtml(item.nombre)}</strong>
+                    <small>${item.stock || 0} ${item.unidadBase || 'pza'}</small>
+                  </button>
+                `,
+                  )
+                  .join('')}
+              ` : `<p class="empty-state">No hay insumos. Intenta otra búsqueda.</p>`}
+            </div>
+          `
+          }
+        </div>
+      </div>
+    </dialog>
+  `
+}
+
+/**
+ * Pantalla de bloqueo si no hay turno abierto
+ */
+function renderShiftLockScreen() {
+  if (!isAuthorizedUser() || state.currentShift || state.shiftOpenModalOpen) {
+    return ''
+  }
+
+  return `
+    <div class="shift-lock-screen">
+      <div class="shift-lock-screen__content">
+        <div class="shift-lock-screen__icon">🔒</div>
+        <h2>Turno Cerrado</h2>
+        <p>Necesitas abrir un turno para continuar</p>
+        <button class="button button--cta" type="button" data-action="open-shift-open-modal">
+          📂 Abrir Turno
+        </button>
+      </div>
+    </div>
   `
 }
 
